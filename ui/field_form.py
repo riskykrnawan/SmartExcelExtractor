@@ -36,53 +36,56 @@ from core.models import (
     ValueDirection,
 )
 from core.profiles import format_validation_error, replace_sources
+from ui.i18n import t
 from ui.preview import PreviewPane
 
-#: UI labels for the matching modes; "Lanjutan" stays hidden by default.
-MATCH_MODE_LABELS: list[tuple[str, MatchMode]] = [
-    ("Sama persis", MatchMode.EXACT),
-    ("Mengandung", MatchMode.CONTAINS),
-    ("Diawali dengan", MatchMode.STARTS_WITH),
-    ("Diakhiri dengan", MatchMode.ENDS_WITH),
-    ("Lanjutan", MatchMode.REGEX),
-]
-HIDDEN_MODE_INDEX = 4  # the "Lanjutan" entry
+#: Index of the "Lanjutan" (advanced) match mode; it stays hidden by default.
+HIDDEN_MODE_INDEX = 4
 
-DISAMBIGUATION_LABELS: list[tuple[str, DisambiguationMode]] = [
-    ("Paling dekat ke alamat sel yang saya tentukan", DisambiguationMode.BY_ADDRESS),
-    ("Paling dekat ke tulisan pembanding", DisambiguationMode.NEAR_KEYWORD),
-    ("Tidak dekat dengan tulisan pembanding", DisambiguationMode.NOT_NEAR_KEYWORD),
-]
 
-REFERENCE_MODE_LABELS: list[tuple[str, MatchMode]] = MATCH_MODE_LABELS[:4]
+def match_mode_labels() -> list[tuple[str, MatchMode]]:
+    """Matching-mode labels, in the active language."""
+    return [
+        (t("mode.exact"), MatchMode.EXACT),
+        (t("mode.contains"), MatchMode.CONTAINS),
+        (t("mode.starts"), MatchMode.STARTS_WITH),
+        (t("mode.ends"), MatchMode.ENDS_WITH),
+        (t("mode.regex"), MatchMode.REGEX),
+    ]
 
-DATA_TYPE_LABELS: list[tuple[str, DataType]] = [
-    ("Apa saja", DataType.ANY),
-    ("Angka", DataType.NUMBER),
-    ("Teks", DataType.TEXT),
-    ("Tanggal", DataType.DATE),
-]
 
-DIRECTION_LABELS: list[tuple[str, ValueDirection]] = [
-    ("di sebelah kanan", ValueDirection.RIGHT),
-    ("di sebelah kiri", ValueDirection.LEFT),
-    ("di bawah", ValueDirection.DOWN),
-    ("di atas", ValueDirection.UP),
-]
+def reference_mode_labels() -> list[tuple[str, MatchMode]]:
+    """Match modes offered for a comparison keyword (no advanced mode)."""
+    return match_mode_labels()[:4]
 
-TIP_NAME = (
-    "Huruf, angka, dan garis bawah saja. Contoh: prod_hi. "
-    "Nama harus berbeda dari data lain di profil ini."
-)
-TIP_ROW = (
-    "Tulis tulisan yang ada di baris, misalnya: Produksi Harian. "
-    "Spasi berlebih dan huruf besar/kecil mengikuti pilihan di bawah."
-)
-TIP_COL = (
-    "Tulis tulisan di kolom yang nilainya diambil, misalnya: Total. "
-    "Kalau datanya berbentuk 'label: nilai', kosongkan saja isian ini."
-)
 
+def disambiguation_labels() -> list[tuple[str, DisambiguationMode]]:
+    """Disambiguation-choice labels, in the active language."""
+    return [
+        (t("dis.by_address"), DisambiguationMode.BY_ADDRESS),
+        (t("dis.near"), DisambiguationMode.NEAR_KEYWORD),
+        (t("dis.not_near"), DisambiguationMode.NOT_NEAR_KEYWORD),
+    ]
+
+
+def data_type_labels() -> list[tuple[str, DataType]]:
+    """Data-type labels, in the active language."""
+    return [
+        (t("type.any"), DataType.ANY),
+        (t("type.number"), DataType.NUMBER),
+        (t("type.text"), DataType.TEXT),
+        (t("type.date"), DataType.DATE),
+    ]
+
+
+def direction_labels() -> list[tuple[str, ValueDirection]]:
+    """Value-direction labels, in the active language."""
+    return [
+        (t("dir.right"), ValueDirection.RIGHT),
+        (t("dir.left"), ValueDirection.LEFT),
+        (t("dir.down"), ValueDirection.DOWN),
+        (t("dir.up"), ValueDirection.UP),
+    ]
 
 def mode_help_text(mode: MatchMode, text: str, case_sensitive: bool) -> str:
     """One plain-language sentence with live examples for the chosen mode."""
@@ -91,14 +94,14 @@ def mode_help_text(mode: MatchMode, text: str, case_sensitive: bool) -> str:
         variants = f"'{sample}'"
         if not case_sensitive:
             variants += f", '{sample.lower()}'"
-        return f"Akan cocok dengan: {variants} - Tidak cocok dengan: '{sample} Total'"
+        return t("help.exact", matches=variants, sample=sample)
     if mode is MatchMode.CONTAINS:
-        return f"Akan cocok dengan: 'Rekap {sample}' - Tidak cocok dengan: '{sample[:-1]}'"
+        return t("help.contains", sample=sample, short=sample[:-1])
     if mode is MatchMode.STARTS_WITH:
-        return f"Akan cocok dengan: '{sample} 01' - Tidak cocok dengan: 'Rekap {sample}'"
+        return t("help.starts", sample=sample)
     if mode is MatchMode.ENDS_WITH:
-        return f"Akan cocok dengan: 'Rekap {sample}' - Tidak cocok dengan: '{sample} 01'"
-    return "Mode Lanjutan: pola tulisan khusus, untuk pengguna terlatih saja."
+        return t("help.ends", sample=sample)
+    return t("help.regex")
 
 
 def select_by_data(combo: QComboBox, data: object) -> None:
@@ -154,17 +157,17 @@ class KeywordEditor(QWidget):
         layout.addLayout(head)
 
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("Tulis kata kunci...")
+        self.edit.setPlaceholderText(t("ke.placeholder"))
         layout.addWidget(self.edit)
 
         options = QHBoxLayout()
-        options.addWidget(QLabel("Cara mencocokkan:"))
+        options.addWidget(QLabel(t("ke.label_match")))
         self.mode_combo = QComboBox()
-        fill_combo(self.mode_combo, MATCH_MODE_LABELS)
+        fill_combo(self.mode_combo, match_mode_labels())
         # Qt6 has no per-item hide flag; hide the popup row instead.
         self.mode_combo.view().setRowHidden(HIDDEN_MODE_INDEX, True)  # "Lanjutan"
         options.addWidget(self.mode_combo)
-        self.case_check = QCheckBox("Bedakan huruf besar/kecil")
+        self.case_check = QCheckBox(t("ke.case"))
         options.addWidget(self.case_check)
         options.addStretch(1)
         layout.addLayout(options)
@@ -174,15 +177,15 @@ class KeywordEditor(QWidget):
         self.help_label.setStyleSheet("color: #666666;")
         layout.addWidget(self.help_label)
 
-        self.unique_check = QCheckBox("Tulisan ini hanya muncul satu kali di sheet")
+        self.unique_check = QCheckBox(t("ke.unique"))
         self.unique_check.setChecked(True)
         layout.addWidget(self.unique_check)
 
-        self.extra_group = QGroupBox("Kalau muncul lebih dari sekali...")
+        self.extra_group = QGroupBox(t("ke.extra_group"))
         extra_layout = QVBoxLayout(self.extra_group)
-        extra_layout.addWidget(QLabel("Cara memilih yang dipakai:"))
+        extra_layout.addWidget(QLabel(t("ke.label_choose")))
         self.disambiguation_combo = QComboBox()
-        fill_combo(self.disambiguation_combo, DISAMBIGUATION_LABELS)
+        fill_combo(self.disambiguation_combo, disambiguation_labels())
         extra_layout.addWidget(self.disambiguation_combo)
 
         self.extra_stack = QStackedWidget()
@@ -215,27 +218,27 @@ class KeywordEditor(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("Alamat sel acuan (contoh: I45):"))
+        layout.addWidget(QLabel(t("ke.address_label")))
         self.address_edit = QLineEdit()
-        self.address_edit.setPlaceholderText("Contoh: I45")
+        self.address_edit.setPlaceholderText(t("ke.address_placeholder"))
         layout.addWidget(self.address_edit)
         return page
 
     def _build_reference_inputs(self, layout: QVBoxLayout) -> tuple[QLineEdit, QComboBox, QLineEdit]:
         """Shared 'comparison' inputs: text + its own mode + optional address."""
-        layout.addWidget(QLabel("Tulisan pembanding (contoh: SECTION PRODUKSI):"))
+        layout.addWidget(QLabel(t("ke.ref_label")))
         text_edit = QLineEdit()
         layout.addWidget(text_edit)
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Cara mencocokkan pembanding:"))
+        mode_row.addWidget(QLabel(t("ke.ref_match")))
         mode_combo = QComboBox()
-        fill_combo(mode_combo, REFERENCE_MODE_LABELS)
+        fill_combo(mode_combo, reference_mode_labels())
         mode_row.addWidget(mode_combo)
         mode_row.addStretch(1)
         layout.addLayout(mode_row)
-        layout.addWidget(QLabel("...atau alamat sel (kosongkan bila memakai tulisan):"))
+        layout.addWidget(QLabel(t("ke.ref_address")))
         address_edit = QLineEdit()
-        address_edit.setPlaceholderText("Contoh: I45")
+        address_edit.setPlaceholderText(t("ke.address_placeholder"))
         layout.addWidget(address_edit)
         return text_edit, mode_combo, address_edit
 
@@ -256,14 +259,14 @@ class KeywordEditor(QWidget):
             self._build_reference_inputs(layout)
         )
         radius_row = QHBoxLayout()
-        radius_row.addWidget(QLabel("Jarak 'dekat' (jumlah sel):"))
+        radius_row.addWidget(QLabel(t("ke.radius_label")))
         self.radius_spin = QSpinBox()
         self.radius_spin.setRange(1, 10_000)
         self.radius_spin.setValue(10)
         radius_row.addWidget(self.radius_spin)
         radius_row.addStretch(1)
         layout.addLayout(radius_row)
-        layout.addWidget(QLabel("Kemunculan dalam jarak ini dianggap dekat dan dibuang."))
+        layout.addWidget(QLabel(t("ke.radius_note")))
         return page
 
     def config(self) -> KeywordConfig:
@@ -387,7 +390,9 @@ class FieldFormDialog(QDialog):
         #: The validated sources to apply after a successful save (set in accept).
         self.sources: list[SourceConfig] | None = None
         self.field: FieldConfig | None = None
-        self.setWindowTitle("Data baru" if field is None else f"Ubah data '{field.output_name}'")
+        self.setWindowTitle(
+            t("ff.title_new") if field is None else t("ff.title_edit", name=field.output_name)
+        )
         self.resize(1150, 740)
 
         root = QVBoxLayout(self)
@@ -398,48 +403,44 @@ class FieldFormDialog(QDialog):
         form = QVBoxLayout(form_widget)
 
         name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("<b>Nama untuk hasil ini</b>"))
-        name_row.addWidget(HelpButton(TIP_NAME))
+        name_row.addWidget(QLabel(t("ff.label_name")))
+        name_row.addWidget(HelpButton(t("tip.name")))
         name_row.addStretch(1)
         form.addLayout(name_row)
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Contoh: prod_hi")
+        self.name_edit.setPlaceholderText(t("ff.name_placeholder"))
         form.addWidget(self.name_edit)
 
-        self.row_editor = KeywordEditor("Cari baris yang bertuliskan...", TIP_ROW)
+        self.row_editor = KeywordEditor(t("ff.prompt_row"), t("tip.row"))
         form.addWidget(self.row_editor)
-        self.col_editor = KeywordEditor(
-            "Cari kolom yang bertuliskan (boleh dikosongkan)...", TIP_COL
-        )
+        self.col_editor = KeywordEditor(t("ff.prompt_col"), t("tip.col"))
         form.addWidget(self.col_editor)
 
-        self.offset_group = QGroupBox("Kalau kolom kosong, ambil nilai yang...")
+        self.offset_group = QGroupBox(t("ff.offset_group"))
         offset_row = QHBoxLayout(self.offset_group)
         self.direction_combo = QComboBox()
-        fill_combo(self.direction_combo, DIRECTION_LABELS)
+        fill_combo(self.direction_combo, direction_labels())
         offset_row.addWidget(self.direction_combo)
-        offset_row.addWidget(QLabel("dari tulisan baris, geser"))
+        offset_row.addWidget(QLabel(t("ff.offset_from")))
         self.offset_spin = QSpinBox()
         self.offset_spin.setRange(1, 10_000)
         self.offset_spin.setValue(1)
         offset_row.addWidget(self.offset_spin)
-        offset_row.addWidget(QLabel("sel"))
+        offset_row.addWidget(QLabel(t("ff.offset_cells")))
         offset_row.addStretch(1)
         form.addWidget(self.offset_group)
 
         type_row = QHBoxLayout()
-        type_row.addWidget(QLabel("<b>Tipe data yang diharapkan</b>"))
+        type_row.addWidget(QLabel(t("ff.label_type")))
         self.type_combo = QComboBox()
-        fill_combo(self.type_combo, DATA_TYPE_LABELS)
+        fill_combo(self.type_combo, data_type_labels())
         type_row.addWidget(self.type_combo)
         type_row.addStretch(1)
         form.addLayout(type_row)
-        form.addWidget(
-            QLabel("Kalau nilainya tidak sesuai, muncul peringatan; nilai asli tetap disimpan.")
-        )
-        self.allow_empty_check = QCheckBox("Nilai kosong tidak dianggap masalah")
+        form.addWidget(QLabel(t("ff.type_note")))
+        self.allow_empty_check = QCheckBox(t("ff.allow_empty"))
         form.addWidget(self.allow_empty_check)
-        form.addWidget(QLabel("Kalau tidak dicentang, nilai kosong ditandai 'perlu dicek'."))
+        form.addWidget(QLabel(t("ff.allow_empty_note")))
         form.addStretch(1)
         form_scroll.setWidget(form_widget)
         body.addWidget(form_scroll, 3)
@@ -450,8 +451,8 @@ class FieldFormDialog(QDialog):
         root.addLayout(body, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText("Simpan")
-        buttons.button(QDialogButtonBox.Cancel).setText("Batal")
+        buttons.button(QDialogButtonBox.Save).setText(t("ff.btn_save"))
+        buttons.button(QDialogButtonBox.Cancel).setText(t("ff.btn_cancel"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -552,11 +553,11 @@ class FieldFormDialog(QDialog):
             replace_sources(self._profile, sources)
         except ValidationError as exc:
             QMessageBox.warning(
-                self, "Data belum bisa disimpan", "\n".join(format_validation_error(exc))
+                self, t("ff.err_save"), "\n".join(format_validation_error(exc))
             )
             return
         except ValueError as exc:
-            QMessageBox.warning(self, "Data belum bisa disimpan", str(exc))
+            QMessageBox.warning(self, t("ff.err_save"), str(exc))
             return
         self.field = field
         self.sources = sources

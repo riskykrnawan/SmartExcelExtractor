@@ -148,7 +148,9 @@ Tambahan di UI: tombol **"Simpan Laporan Audit"** (CSV atau HTML sederhana) beri
 # UI/UX (wajib)
 Wizard / layout 3 panel yang ramah non-IT:
 1. **Langkah 1 – Sumber:** pilih folder induk → centang sub-folder.
-2. **Langkah 2 – Data yang diambil:** pohon `Sub-folder > Sheet > Field`, dengan tombol "+ Tambah Sheet", "+ Tambah Data", duplikasi field, hapus.
+2. **Langkah 2 – Data yang diambil:** pohon `Sub-folder > Sheet > Field`,
+   dengan tombol "+ Tambah Sheet", "+ Tambah Data", duplikasi field/sheet (duplikasi sheet menyalin semua field-nya ke sheet lain dengan aturan yang sama — kasus laporan harian yang satu tanggal satu sheet — dan nama hasil salinan harus tetap unik, jadi diberi akhiran angka), hapus.
+   Urutan sheet dan field bisa diubah dengan **menggeser barisnya** (drag and drop), tanpa mengubah isi aturannya. Urutan field menentukan urutan hasil (baris pada tabel hasil dan urutan kunci di file JSON). Hanya boleh geser di dalam folder yang sama (untuk sheet) dan di dalam sheet yang sama (untuk field); geseran lain diabaikan tanpa pesan. Baris yang sedang dibuka pengguna (sub-folder/sheet) tetap terbuka setelah setiap perubahan, dan baris yang baru ditambah/diubah selalu ikut terbuka serta tersorot.
 3. **Langkah 3 – Jalankan & Periksa:** tombol "Jalankan Ekstraksi", ringkasan status berwarna (🟢 OK / 🟡 Perlu dicek / 🔴 Gagal), tabel hasil, dan tombol simpan JSON.
 
 **Form field** harus berbahasa awam, dengan label seperti "Nama untuk hasil ini", "Cari baris yang bertuliskan…", "Cari kolom yang bertuliskan…", dan checkbox "Tulisan ini hanya muncul satu kali di sheet". Tampilkan ikon bantuan (?) dengan contoh. Pilihan tambahan ("Kalau muncul lebih dari sekali…") hanya muncul bila checkbox tidak dicentang.

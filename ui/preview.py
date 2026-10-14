@@ -20,30 +20,38 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import FieldConfig, Profile, SheetConfig, SourceConfig
+from ui.i18n import t
 from ui.sample_files import SampleFile, sample_files
 from ui.worker import PreviewWorker
 
 logger = logging.getLogger(__name__)
 
-_OK_COLOR = QColor("#2E7D32")
-_WARNING_COLOR = QColor("#EF6C00")
-_ERROR_COLOR = QColor("#C62828")
 _ROW_KEYWORD_BG = QColor("#BBDEFB")  # blue: row keyword cell
 _COL_KEYWORD_BG = QColor("#C8E6C9")  # green: column keyword cell
 _VALUE_BG = QColor("#FFE0B2")  # orange: value cell (and merged range)
+_BOX_BG = QColor("#F5F5F5")  # value box fill
+# Every fill above is light, while a dark system theme paints text white; without an explicit
+# dark colour the text vanishes into its own background.
+_TEXT_ON_LIGHT = QColor("#212121")
 
-_STATUS_TEXT = {
-    "ok": ("&#128994; OK", _OK_COLOR),
-    "warning": ("&#128992; Perlu dicek", _WARNING_COLOR),
-    "error": ("&#128308; Gagal", _ERROR_COLOR),
-}
 
-_DISAMBIGUATION_TEXT = {
-    "unique": "karena tulisan ini hanya muncul sekali",
-    "by_address": "karena paling dekat ke alamat acuan",
-    "near_keyword": "karena paling dekat ke tulisan pembanding",
-    "not_near_keyword": "karena tidak dekat dengan tulisan pembanding",
-}
+def _status_text(status: str) -> tuple[str, QColor, QColor]:
+    """Status text, a dark text colour, and a light pill colour (high contrast)."""
+    return {
+        "ok": (t("pv.status_ok"), _TEXT_ON_LIGHT, QColor("#E8F5E9")),
+        "warning": (t("pv.status_warning"), _TEXT_ON_LIGHT, QColor("#FFF3E0")),
+        "error": (t("pv.status_error"), _TEXT_ON_LIGHT, QColor("#FFEBEE")),
+    }.get(status, ("-", _TEXT_ON_LIGHT, QColor("#FFFFFF")))
+
+
+def _disambiguation_text(key: str) -> str:
+    """The 'because ...' reason for the chosen candidate, in the active language."""
+    return {
+        "unique": t("pv.dis_unique"),
+        "by_address": t("pv.dis_by_address"),
+        "near_keyword": t("pv.dis_near"),
+        "not_near_keyword": t("pv.dis_not_near"),
+    }.get(key, "")
 
 
 class PreviewPane(QWidget):
@@ -65,10 +73,10 @@ class PreviewPane(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("<b>Pratinjau hasil</b>"))
+        layout.addWidget(QLabel(t("pv.title")))
 
         sample_row = QVBoxLayout()
-        sample_row.addWidget(QLabel("File sampel:"))
+        sample_row.addWidget(QLabel(t("pv.label_sample")))
         self.sample_combo = QComboBox()
         self.sample_combo.currentIndexChanged.connect(self.schedule_refresh)
         sample_row.addWidget(self.sample_combo)
@@ -81,22 +89,22 @@ class PreviewPane(QWidget):
         self.value_label.setWordWrap(True)
         self.value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.value_label.setStyleSheet(
-            "background: #F5F5F5; padding: 6px; border: 1px solid #DDDDDD;"
+            f"color: {_TEXT_ON_LIGHT.name()}; background: {_BOX_BG.name()}; "
+            "padding: 6px; border: 1px solid #DDDDDD;"
         )
         layout.addWidget(self.value_label)
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
-        self.detail_label.setStyleSheet("color: #666666;")
         layout.addWidget(self.detail_label)
         self.occurrence_label = QLabel("")
         layout.addWidget(self.occurrence_label)
 
-        layout.addWidget(QLabel("Kemunculan dan catatan:"))
+        layout.addWidget(QLabel(t("pv.label_notes")))
         self.candidates_list = QListWidget()
         self.candidates_list.setMaximumHeight(120)
         layout.addWidget(self.candidates_list)
 
-        layout.addWidget(QLabel("Cuplikan sheet (sekitar 5 sel):"))
+        layout.addWidget(QLabel(t("pv.label_grid")))
         self.grid_table = QTableWidget()
         self.grid_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.grid_table.setSelectionMode(QTableWidget.NoSelection)
@@ -104,13 +112,16 @@ class PreviewPane(QWidget):
         layout.addWidget(self.grid_table)
 
         legend = QLabel(
-            '<span style="background-color:#BBDEFB;">&nbsp;&nbsp;&nbsp;</span> tulisan baris'
-            '&nbsp; <span style="background-color:#C8E6C9;">&nbsp;&nbsp;&nbsp;</span> tulisan kolom'
-            '&nbsp; <span style="background-color:#FFE0B2;">&nbsp;&nbsp;&nbsp;</span> nilai'
+            '<span style="background-color:#BBDEFB;">&nbsp;&nbsp;&nbsp;</span> '
+            + t("pv.legend_row")
+            + '&nbsp; <span style="background-color:#C8E6C9;">&nbsp;&nbsp;&nbsp;</span> '
+            + t("pv.legend_col")
+            + '&nbsp; <span style="background-color:#FFE0B2;">&nbsp;&nbsp;&nbsp;</span> '
+            + t("pv.legend_value")
         )
         layout.addWidget(legend)
         layout.addStretch(1)
-        self._show_placeholder("Pratinjau akan tampil di sini.")
+        self._show_placeholder(t("pv.placeholder_default"))
 
     def set_context(
         self,
@@ -128,7 +139,7 @@ class PreviewPane(QWidget):
             self.sample_combo.addItem(sample.label, sample)
         self.sample_combo.blockSignals(False)
         if self.sample_combo.count() == 0:
-            self._show_placeholder("Belum ada file sampel. Lengkapi Langkah 1 dulu.")
+            self._show_placeholder(t("pv.no_sample"))
         else:
             self.schedule_refresh()
 
@@ -140,11 +151,11 @@ class PreviewPane(QWidget):
         self._pending = False
         field = self._current_field()
         if field is None:
-            self._show_placeholder("Lengkapi dulu bagian form yang masih kosong.")
+            self._show_placeholder(t("pv.incomplete"))
             return
         sample = self.sample_combo.currentData()
         if not isinstance(sample, SampleFile) or self._sheet is None:
-            self._show_placeholder("Belum ada file sampel. Lengkapi Langkah 1 dulu.")
+            self._show_placeholder(t("pv.no_sample"))
             return
         profile = Profile(
             name="Pratinjau",
@@ -179,8 +190,8 @@ class PreviewPane(QWidget):
         self._worker.succeeded.connect(self._on_success)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._on_finished)
-        self.status_label.setText("Membaca file sampel...")
-        self.status_label.setStyleSheet("color: #666666; font-size: 15px;")
+        self.status_label.setText(t("pv.loading"))
+        self.status_label.setStyleSheet("font-size: 15px;")
         self._worker.start()
 
     def _on_success(self, request_id: int, payload: dict) -> None:
@@ -191,24 +202,25 @@ class PreviewPane(QWidget):
         audit_fields = result["audit"]["fields"]
         audit = audit_fields[0] if audit_fields else None
         if entry is None:
-            self._show_placeholder("Hasil pratinjau tidak tersedia.")
+            self._show_placeholder(t("pv.no_result"))
             return
-        status_text, status_color = _STATUS_TEXT.get(entry["status"], ("-", _ERROR_COLOR))
+        status_text, text_colour, pill_colour = _status_text(entry["status"])
         self.status_label.setText(status_text)
         self.status_label.setStyleSheet(
-            f"color: {status_color.name()}; font-size: 15px; font-weight: bold;"
+            f"color: {text_colour.name()}; background: {pill_colour.name()}; "
+            "font-size: 15px; font-weight: bold; padding: 2px 6px; border-radius: 4px;"
         )
         value = entry["value"]
-        self.value_label.setText("(kosong)" if value is None else str(value))
+        self.value_label.setText(t("pv.value_empty") if value is None else str(value))
         location = entry["location"]
         parts = []
         if location["value_address"]:
-            parts.append(f"Nilai di sel {location['value_address']}")
+            parts.append(t("pv.detail_value", address=location["value_address"]))
         if location["row_keyword_address"]:
-            parts.append(f"tulisan baris di {location['row_keyword_address']}")
+            parts.append(t("pv.detail_row", address=location["row_keyword_address"]))
         if location["col_keyword_address"]:
-            parts.append(f"tulisan kolom di {location['col_keyword_address']}")
-        self.detail_label.setText(" - ".join(parts) if parts else "Tidak ada titik temu.")
+            parts.append(t("pv.detail_col", address=location["col_keyword_address"]))
+        self.detail_label.setText(" - ".join(parts) if parts else t("pv.no_match"))
         self.occurrence_label.setText(self._occurrence_text(audit))
         self._fill_candidates(audit)
         self._fill_grid(payload.get("grid"))
@@ -232,30 +244,30 @@ class PreviewPane(QWidget):
         if not audit:
             return ""
         parts = []
-        for key, label in (("row_keyword", "baris"), ("col_keyword", "kolom")):
+        for key, label in (("row_keyword", "pv.occ_row"), ("col_keyword", "pv.occ_col")):
             keyword = audit.get(key)
             if keyword:
-                parts.append(f"{label}: {len(keyword['candidates'])} kemunculan")
-        return "Tulisan " + ", ".join(parts) if parts else ""
+                parts.append(f"{t(label)}: {t('pv.occ_count', count=len(keyword['candidates']))}")
+        return t("pv.occ_prefix") + ", ".join(parts) if parts else ""
 
     def _fill_candidates(self, audit: dict | None) -> None:
         self.candidates_list.clear()
         if not audit:
             return
-        for key, label in (("row_keyword", "Tulisan baris"), ("col_keyword", "Tulisan kolom")):
+        for key, label in (("row_keyword", "pv.cand_row"), ("col_keyword", "pv.cand_col")):
             keyword = audit.get(key)
             if not keyword:
                 continue
-            self.candidates_list.addItem(QListWidgetItem(f"- {label}:"))
+            self.candidates_list.addItem(QListWidgetItem(f"- {t(label)}:"))
             for address in keyword["candidates"]:
-                suffix = " (dipakai)" if address == keyword["selected"] else ""
+                suffix = t("pv.cand_used") if address == keyword["selected"] else ""
                 self.candidates_list.addItem(QListWidgetItem(f"    {address}{suffix}"))
             if keyword["selected"]:
-                reason = _DISAMBIGUATION_TEXT.get(keyword["disambiguation"] or "", "")
+                reason = _disambiguation_text(keyword["disambiguation"] or "")
                 reference = keyword.get("reference")
                 detail = f" {reference}" if reference else ""
                 self.candidates_list.addItem(
-                    QListWidgetItem(f"    alasan: {reason}{detail}")
+                    QListWidgetItem(f"    {t('pv.cand_reason')}{reason}{detail}")
                 )
         for warning in audit.get("warnings", []):
             self.candidates_list.addItem(QListWidgetItem(f"! {warning}"))
@@ -282,10 +294,15 @@ class PreviewPane(QWidget):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 background = highlights.get((row_idx, col_idx))
-                if (row_numbers[row_idx], col_idx + 1) in merged and background is None:
+                merged_cell = (
+                    row_numbers[row_idx],
+                    column_index_from_string(col_letters[col_idx]),
+                ) in merged
+                if merged_cell and background is None:
                     background = _VALUE_BG
                 if background is not None:
                     item.setBackground(background)
+                    item.setForeground(_TEXT_ON_LIGHT)
                 self.grid_table.setItem(row_idx, col_idx, item)
         self.grid_table.resizeColumnsToContents()
 

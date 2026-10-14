@@ -37,6 +37,7 @@ from core.profiles import (
     rename_profile,
     save_profile,
 )
+from ui.i18n import LANGUAGES, current_language, set_language, t
 from ui.settings import Settings
 from ui.step1_sources import StepSources
 from ui.step2_fields import StepData
@@ -62,38 +63,50 @@ class MainWindow(QMainWindow):
         self._profile: Profile | None = None
         self._profile_path: Path | None = None
         self._loading = False
+        remembered_language = self._settings.get("language")
+        if isinstance(remembered_language, str):
+            set_language(remembered_language)
         self.setWindowTitle("SmartExcelExtractor")
         self.resize(1150, 780)
 
         central = QWidget()
         layout = QVBoxLayout(central)
         top = QHBoxLayout()
-        top.addWidget(QLabel("Profil:"))
+        self.profile_label = QLabel()
+        top.addWidget(self.profile_label)
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(220)
         self.profile_combo.currentIndexChanged.connect(self._on_combo_changed)
         top.addWidget(self.profile_combo)
         button_row = QHBoxLayout()
-        for label, slot in (
-            ("Baru", self._new_profile),
-            ("Salin", self._duplicate_profile),
-            ("Ubah Nama", self._rename_profile),
-            ("Hapus", self._delete_profile),
-            ("Impor", self._import_profile),
-            ("Ekspor", self._export_profile),
+        self._profile_buttons: dict[str, QPushButton] = {}
+        for key, slot in (
+            ("main.btn_new", self._new_profile),
+            ("main.btn_copy", self._duplicate_profile),
+            ("main.btn_rename", self._rename_profile),
+            ("main.btn_delete", self._delete_profile),
+            ("main.btn_import", self._import_profile),
+            ("main.btn_export", self._export_profile),
         ):
-            button = QPushButton(label)
+            button = QPushButton()
             button.clicked.connect(slot)
+            self._profile_buttons[key] = button
             button_row.addWidget(button)
         top.addLayout(button_row)
+        self.language_label = QLabel()
+        top.addWidget(self.language_label)
+        self.language_combo = QComboBox()
+        for code, name in LANGUAGES:
+            self.language_combo.addItem(name, code)
+        self.language_combo.setCurrentIndex(
+            max(0, self.language_combo.findData(current_language()))
+        )
+        self.language_combo.currentIndexChanged.connect(self._on_language_changed)
+        top.addWidget(self.language_combo)
         top.addStretch(1)
         layout.addLayout(top)
 
         self.wizard = QWizard()
-        self.wizard.setButtonText(QWizard.BackButton, "Kembali")
-        self.wizard.setButtonText(QWizard.NextButton, "Lanjut")
-        self.wizard.setButtonText(QWizard.FinishButton, "Selesai")
-        self.wizard.setButtonText(QWizard.CancelButton, "Tutup")
         self.wizard.rejected.connect(self.close)
         self.page_sources = StepSources(self._current, self.auto_save, self._settings)
         self.page_fields = StepData(self._current, self.auto_save)
@@ -103,12 +116,44 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.wizard, 1)
         self.setCentralWidget(central)
         self.statusBar()
+        self._apply_texts()
         self._restore_session()
+
+    def _apply_texts(self) -> None:
+        """Set the window's static texts in the active language."""
+        self.profile_label.setText(t("main.label_profile"))
+        for key, button in self._profile_buttons.items():
+            button.setText(t(key))
+        self.language_label.setText(t("main.label_language"))
+        self.wizard.setButtonText(QWizard.BackButton, t("wizard.btn_back"))
+        self.wizard.setButtonText(QWizard.NextButton, t("wizard.btn_next"))
+        self.wizard.setButtonText(QWizard.FinishButton, t("wizard.btn_finish"))
+        self.wizard.setButtonText(QWizard.CancelButton, t("wizard.btn_close"))
+
+    def retranslate(self) -> None:
+        """Re-apply every text after a language change and rescan the pages."""
+        self._apply_texts()
+        self.page_sources.retranslate()
+        self.page_fields.retranslate()
+        self.page_run.retranslate()
+        if self._profile is not None:
+            self.setWindowTitle(f"SmartExcelExtractor - {self._profile.name}")
+
+    def _on_language_changed(self, index: int) -> None:
+        if self._loading or index < 0:
+            return
+        code = str(self.language_combo.itemData(index))
+        set_language(code)
+        self._settings.set("language", code)
+        self.retranslate()
+        self.statusBar().showMessage(
+            t("status.language_applied", name=self.language_combo.currentText()), 5000
+        )
 
     def _current(self) -> Profile:
         """The open profile; the window always has one after start-up."""
         if self._profile is None:  # defensive: never expected
-            raise RuntimeError("Tidak ada profil yang terbuka.")
+            raise RuntimeError(t("main.err_no_profile"))
         return self._profile
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt naming
@@ -120,9 +165,9 @@ class MainWindow(QMainWindow):
         paths = list_profiles(self._profiles_directory)
         if not paths:
             try:
-                profile = create_profile("Profil Baru", self._profiles_directory)
+                profile = create_profile(t("main.new_profile_title"), self._profiles_directory)
             except ProfileError as exc:
-                self._warn("Tidak bisa membuat profil baru", exc)
+                self._warn(t("main.err_create_new"), exc)
                 return
             paths = [save_profile(profile, directory=self._profiles_directory)]
         remembered = self._settings.get("last_profile")
@@ -153,7 +198,7 @@ class MainWindow(QMainWindow):
         try:
             profile = load_profile(path)
         except ProfileError as exc:
-            self._warn("Profil tidak bisa dibuka", exc)
+            self._warn(t("main.err_open"), exc)
             return
         self._profile = profile
         self._profile_path = path
@@ -177,18 +222,18 @@ class MainWindow(QMainWindow):
         try:
             save_profile(self._profile, self._profile_path)
         except OSError as exc:
-            self.statusBar().showMessage(f"Perubahan belum tersimpan: {exc}", 5000)
+            self.statusBar().showMessage(t("status.auto_save_failed", error=exc), 5000)
             return
-        self.statusBar().showMessage("Perubahan tersimpan otomatis.", 2000)
+        self.statusBar().showMessage(t("status.auto_saved"), 2000)
 
     def _new_profile(self) -> None:
-        name, ok = QInputDialog.getText(self, "Profil baru", "Nama profil:")
+        name, ok = QInputDialog.getText(self, t("main.new_profile_title"), t("main.new_profile_prompt"))
         if not ok or not name.strip():
             return
         try:
             profile = create_profile(name.strip(), self._profiles_directory)
         except (ProfileError, ValidationError) as exc:
-            self._warn("Tidak bisa membuat profil", exc)
+            self._warn(t("main.err_create"), exc)
             return
         self._select_path(find_profile(profile.name, self._profiles_directory))
 
@@ -196,14 +241,17 @@ class MainWindow(QMainWindow):
         if self._profile_path is None:
             return
         name, ok = QInputDialog.getText(
-            self, "Salin profil", "Nama profil baru:", text=f"{self._current().name} (salinan)"
+            self,
+            t("main.dup_title"),
+            t("main.dup_prompt"),
+            text=t("main.dup_default", name=self._current().name),
         )
         if not ok or not name.strip():
             return
         try:
             path = duplicate_profile(self._profile_path, name.strip(), self._profiles_directory)
         except (ProfileError, ValidationError) as exc:
-            self._warn("Tidak bisa menyalin profil", exc)
+            self._warn(t("main.err_copy"), exc)
             return
         self._select_path(path)
 
@@ -211,14 +259,14 @@ class MainWindow(QMainWindow):
         if self._profile_path is None:
             return
         name, ok = QInputDialog.getText(
-            self, "Ubah nama profil", "Nama baru:", text=self._current().name
+            self, t("main.rename_title"), t("main.rename_prompt"), text=self._current().name
         )
         if not ok or not name.strip():
             return
         try:
             path = rename_profile(self._profile_path, name.strip(), self._profiles_directory)
         except (ProfileError, ValidationError) as exc:
-            self._warn("Tidak bisa mengubah nama profil", exc)
+            self._warn(t("main.err_rename"), exc)
             return
         self._select_path(path)
 
@@ -227,8 +275,8 @@ class MainWindow(QMainWindow):
             return
         answer = QMessageBox.question(
             self,
-            "Hapus profil",
-            f"Hapus profil '{self._current().name}'?",
+            t("main.delete_title"),
+            t("main.delete_question", name=self._current().name),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -237,7 +285,7 @@ class MainWindow(QMainWindow):
         try:
             delete_profile(self._profile_path)
         except ProfileError as exc:
-            self._warn("Tidak bisa menghapus profil", exc)
+            self._warn(t("main.err_delete"), exc)
             return
         self._profile = None
         self._profile_path = None
@@ -245,14 +293,14 @@ class MainWindow(QMainWindow):
 
     def _import_profile(self) -> None:
         source, _ = QFileDialog.getOpenFileName(
-            self, "Impor profil", str(app_dir()), "File profil (*.json)"
+            self, t("main.import_title"), str(app_dir()), t("main.file_filter_json")
         )
         if not source:
             return
         try:
             path = import_profile(Path(source), self._profiles_directory)
         except ProfileError as exc:
-            self._warn("Tidak bisa mengimpor profil", exc)
+            self._warn(t("main.err_import"), exc)
             return
         self._select_path(path)
 
@@ -261,18 +309,18 @@ class MainWindow(QMainWindow):
             return
         target, _ = QFileDialog.getSaveFileName(
             self,
-            "Ekspor profil",
+            t("main.export_title"),
             str(Path.home() / f"{self._current().name}.json"),
-            "File profil (*.json)",
+            t("main.file_filter_json"),
         )
         if not target:
             return
         try:
             export_profile(self._profile_path, Path(target))
         except ProfileError as exc:
-            self._warn("Tidak bisa mengekspor profil", exc)
+            self._warn(t("main.err_export"), exc)
             return
-        self.statusBar().showMessage(f"Profil diekspor ke {target}", 5000)
+        self.statusBar().showMessage(t("main.export_done", path=target), 5000)
 
     def _warn(self, title: str, exc: Exception) -> None:
         """Show a friendly problem box (the full detail already goes to the log file)."""

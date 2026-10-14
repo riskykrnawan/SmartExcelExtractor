@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import Profile, SourceConfig
+from ui.i18n import t
 from ui.settings import Settings
 
 
@@ -34,21 +35,23 @@ class StepSources(QWizardPage):
         self._get_profile = get_profile
         self._on_change = on_change
         self._settings = settings
-        self.setTitle("Langkah 1 - Sumber data")
-        self.setSubTitle("Pilih folder induk lalu centang sub-folder yang berisi laporan.")
+        self.setTitle(t("s1.title"))
+        self.setSubTitle(t("s1.subtitle"))
 
         layout = QVBoxLayout(self)
         folder_row = QHBoxLayout()
-        folder_row.addWidget(QLabel("Folder induk:"))
+        self.parent_label = QLabel()
+        folder_row.addWidget(self.parent_label)
         self.folder_edit = QLineEdit()
         self.folder_edit.setReadOnly(True)
         folder_row.addWidget(self.folder_edit, 1)
-        self.pick_button = QPushButton("Pilih Folder...")
+        self.pick_button = QPushButton()
         self.pick_button.clicked.connect(self._pick_folder)
         folder_row.addWidget(self.pick_button)
         layout.addLayout(folder_row)
 
-        layout.addWidget(QLabel("Sub-folder yang ditemukan (centang yang dipakai):"))
+        self.subfolders_label = QLabel()
+        layout.addWidget(self.subfolders_label)
         self.folder_list = QListWidget()
         self.folder_list.itemChanged.connect(self._sync_sources)
         layout.addWidget(self.folder_list, 1)
@@ -57,6 +60,20 @@ class StepSources(QWizardPage):
         self.hint_label.setWordWrap(True)
         self.hint_label.setStyleSheet("color: #666666;")
         layout.addWidget(self.hint_label)
+        self._apply_texts()
+
+    def _apply_texts(self) -> None:
+        """Set the static widget texts in the active language."""
+        self.setTitle(t("s1.title"))
+        self.setSubTitle(t("s1.subtitle"))
+        self.parent_label.setText(t("s1.label_parent"))
+        self.pick_button.setText(t("s1.btn_pick"))
+        self.subfolders_label.setText(t("s1.label_subfolders"))
+
+    def retranslate(self) -> None:
+        """Re-apply texts and rescan after a language change."""
+        self._apply_texts()
+        self.refresh()
 
     def initializePage(self) -> None:
         self.refresh()
@@ -64,19 +81,16 @@ class StepSources(QWizardPage):
     def refresh(self) -> None:
         """Re-read the profile and rescan the sub-folder list."""
         profile = self._get_profile()
-        self.folder_edit.setText(profile.input_root or "(belum dipilih)")
+        self.folder_edit.setText(profile.input_root or t("s1.not_selected"))
         self.folder_list.blockSignals(True)
         self.folder_list.clear()
         root = Path(profile.input_root) if profile.input_root else None
         if root is None:
-            self.hint_label.setText("Tekan 'Pilih Folder...' untuk mulai.")
+            self.hint_label.setText(t("s1.hint_start"))
         elif not root.is_dir():
-            self.hint_label.setText("Folder induk tidak ditemukan. Pilih folder yang lain.")
+            self.hint_label.setText(t("s1.hint_missing"))
         else:
-            self.hint_label.setText(
-                "Tiap sub-folder dianggap berisi satu file Excel. "
-                "Kalau ada lebih dari satu, file yang paling baru dipakai."
-            )
+            self.hint_label.setText(t("s1.hint_info"))
             existing = {source.folder: source.enabled for source in profile.sources}
             for path in sorted(entry for entry in root.iterdir() if entry.is_dir()):
                 item = QListWidgetItem(path.name)
@@ -90,7 +104,7 @@ class StepSources(QWizardPage):
     def _pick_folder(self) -> None:
         profile = self._get_profile()
         start = profile.input_root or self._settings.get("last_dir") or str(Path.home())
-        chosen = QFileDialog.getExistingDirectory(self, "Pilih folder induk laporan", start)
+        chosen = QFileDialog.getExistingDirectory(self, t("s1.dialog_title"), start)
         if not chosen:
             return
         profile.input_root = chosen

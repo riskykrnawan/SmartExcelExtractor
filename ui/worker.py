@@ -13,6 +13,7 @@ from core.audit import RunResult
 from core.extractor import run_extraction
 from core.json_writer import write_json
 from core.models import Profile
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class RunWorker(QThread):
             self.succeeded.emit(result, str(path))
         except Exception:
             logger.exception("Extraction failed in the UI worker")
-            self.failed.emit("Ekstraksi gagal total. Detail lengkap ada di file log.")
+            self.failed.emit(t("wk.run_failed"))
 
 
 class PreviewWorker(QThread):
@@ -63,7 +64,7 @@ class PreviewWorker(QThread):
             logger.exception("Preview failed")
             self.failed.emit(
                 self._request_id,
-                "Pratinjau gagal dijalankan. Detail lengkap ada di file log.",
+                t("wk.preview_failed"),
             )
 
     def _build_grid(self, result: RunResult) -> dict[str, Any] | None:
