@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Tool artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local app data: profiles, machine settings, log, results, practice samples
+profiles/
+settings.json
+output/
+logs/
+samples/
+
+# Secrets
+.env
+
+# Packaging
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+
+init
+.clinerules
