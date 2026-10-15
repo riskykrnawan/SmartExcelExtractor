@@ -6,7 +6,7 @@ from pathlib import Path
 
 import cli as cli_module
 from core.profiles import save_profile
-from tests.test_extractor import profile_for
+from tests.test_extractor import profile_for, simple_field, single_field_profile
 
 
 def test_run_writes_json_and_exits_zero_without_errors(input_a: Path, tmp_path: Path) -> None:
@@ -27,6 +27,16 @@ def test_run_exits_one_when_a_field_fails(input_a: Path, tmp_path: Path) -> None
     path = save_profile(profile, tmp_path / "gagal.json")
     code = cli_module.main(["run", "--profile", str(path), "--output", str(tmp_path / "out")])
     assert code == 1
+
+
+def test_run_prints_missing_sheet_notice(input_a: Path, tmp_path: Path, capsys) -> None:
+    """The UI hides SHEET_ABSENT, but the CLI keeps warning about a missing sheet."""
+    profile = single_field_profile(input_a, simple_field(), sheet="TidakAda")
+    path = save_profile(profile, tmp_path / "sheet-hilang.json")
+    code = cli_module.main(["run", "--profile", str(path), "--output", str(tmp_path / "out")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "[CEK  ] (sumber): Sheet 'TidakAda' tidak ada di" in out
 
 
 def test_run_requires_input_root(tmp_path: Path) -> None:

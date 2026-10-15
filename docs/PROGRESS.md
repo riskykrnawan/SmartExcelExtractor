@@ -181,6 +181,29 @@
   (README sudah ditulis lebih awal dari jadwal atas permintaan user: `README.md` di root — instalasi, cara pakai jendela, CLI + Task Scheduler, lokasi file, pemecahan masalah, cara data latihan, catatan pengembang, dan daftar fitur yang belum ada.)
 - Uji manual UI oleh user (buka `python main.py`, buat profil, jalankan ekstraksi) — belum dijalankan dengan objek Qt yang terlihat.
 
+## Tes mapping & API (revisi v2)
+- `tests/test_mapping.py` (9 test): `suggest_csv` mengusulkan label yang punya nilai di kanan/bawah,
+  menolak sheet yang tidak ada (`MappingError`) dan file yang tak bisa dibuka (`ExcelFileError`),
+  serta menulis CSV yang sama seperti yang dikembalikan; `export_csv` → `import_csv` → `export_csv`
+  menghasilkan berkas identik (semua kolom yang bisa diwakili CSV selamat); pengaturan sederhana
+  (arah `down`, offset 2, tipe `number`, `allow_empty`) terbaca apa adanya; pesan galat menyebut
+  kolom yang kurang, nomor baris yang salah, berkas kosong, dan berkas tak terbaca.
+- `tests/test_api.py` (12 test): server dijalankan di port bebas (thread daemon) dengan penyedia snapshot
+  buatan; `/reports` mengembalikan `meta` + `items` (mode `compact`, tanpa `detail`), `/reports/<kunci>?mode=full`
+  mengembalikan `meta` + `item` berikut `detail` (alamat sel `L45`), `hashes` menyaring item yang sudah dimiliki
+  klien, `from`/`to` menyaring tanggal, `changed_since` yang lebih baru dari `run_at` mengembalikan daftar kosong,
+  `/schema` dilayani sebagai `application/schema+json`, dan galat 400 (mode/bulan salah, penyedia tidak dipanggil),
+  404 (kunci/alamat tak dikenal), 405 (POST) berisi pesan Bahasa Indonesia. Periode manual (`?month=&year=`)
+  terbukti sampai ke penyedia.
+- 152 test pytest; quality gate lolos: `pytest` (152 passed), `ruff check .` (clean),
+  `mypy core` (strict, 14 file, no issues).
+- Uji asap CLI pada pohon sampel sementara (dihapus lagi setelah uji):
+  `cli.py run --mode full` menulis `<nama>_<cap waktu>_full.json` berisi `meta`/`data` dengan `meta.mode = full`
+  dan `detail` per field; `mapping export`, `mapping suggest` (4 usulan dari sheet `Penjualan`),
+  `mapping import` menolak tanpa `--replace` (exit 2) dan menyimpan 14 data dari 3 folder dengan `--replace`;
+  `serve` menjawab `/reports` (JSON `meta`+`items`), `/schema` (200 `application/schema+json`), 400 untuk
+  mode/bulan salah, 404 untuk alamat tak dikenal, 405 untuk POST.
+
 
 ## Open questions
 - Tidak ada (keputusan Fase 0 sudah dikonfirmasi user).
@@ -269,5 +292,149 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python /tmp/boot_check.py  # boot profil: ex
 ```
 `/tmp/state_gui.py` mencetak: sebelum perubahan `True False`, sesudah perubahan `True False`, baris tetap
 tersorot, dan baris field pertama masih punya geometri nyata (benar-benar terlihat), bukan tersembunyi.
+
+## Perbaikan: aplikasi mati mendadak (SIGABRT) saat form ditutup / app keluar
+Dilaporkan user sebagai crash UI; 6 laporan crash macOS (`~/Library/Logs/DiagnosticReports/Python-2026-10-15-09*.ips`)
+semuanya satu keluarga: `QThread: Destroyed while thread '' is still running` → `qFatal` → `abort`.
+Akarnya ada di cara worker dijalankan (`ui/preview.py`, `ui/step3_run.py` memanggil `worker.start()` lalu
+mengandalkan widget pemiliknya sebagai satu-satunya pemegang referensi):
+
+- Tanda tangan laporan crash membuktikan thread yang mati adalah **worker itu sendiri**, bukan thread UI:
+  `QThreadWrapper::run()` → `_Py_Dealloc` → `method_dealloc` → `subtype_dealloc` → `~QThread` → `qFatal`.
+  Referensi terakhir ke worker adalah *bound method* `run()` milik thread itu (PySide melepasnya tepat setelah
+  `run()` kembali). Jadi begitu UI (form/pane) melepas referensinya selagi worker masih membaca file,
+  PySide menghancurkan QThread yang masih jalan → proses dibunuh. Muncul saat user membuka form lalu
+  menutupnya sebelum pratinjau selesai membaca workbook besarnya, dan saat keluar aplikasi selagi job jalan.
+- Perbaikan di satu tempat bersama, `ui/worker.py`: `start_worker(worker)` menyimpan worker di
+  `_LIVE_WORKERS` dan baru melepasnya lewat `_release()` setelah `worker.wait()` (sinyal `finished` bisa
+  datang sebelum `run()` benar-benar usai, jadi urutannya penting). Kedua pemanggil lama (`ui/preview.py`,
+  `ui/step3_run.py`) memakai `start_worker()`; `deleteLater()` pada worker dihapus dari kedua slot karena
+  penghancuran C++ saat thread masih hidup itu justru pemicunya.
+- Jalur keluar: `wait_for_workers()` menunggu worker yang masih jalan, dan kalau tetap hidup
+  `terminate()` + `wait()` — supaya Thread hidup tidak pernah dilepas. Dipasang di `ui/main.py`
+  lewat `app.aboutToQuit` dan `atexit` (menutup juga jalur keluar yang tidak melewati `aboutToQuit`).
+- Regresi dijaga `tests/test_ui_smoke.py::test_a_started_worker_outlives_the_widget_that_started_it`
+  (menghapus referensi UI selagi thread di dalam `run()`). Regresi UI lain (form dibuka/ditutup, tombol
+  Jalankan, hapus/jalan ganda) tetap hijau.
+
+## Verifikasi perbaikan crash worker thread
+```
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q      # 128 passed
+.venv/bin/ruff check .                                       # All checks passed
+.venv/bin/mypy core                                          # Success: no issues found in 11 source files
+unset QT_QPA_PLATFORM; .venv/bin/python /tmp/diag5.py --nofix # exit 134 (bug lama terulang)
+unset QT_QPA_PLATFORM; .venv/bin/python /tmp/diag5.py         # exit 0 (perbaikan)
+unset QT_QPA_PLATFORM; .venv/bin/python /tmp/diag6.py --nofix # exit 134 (keluar saat job jalan)
+unset QT_QPA_PLATFORM; .venv/bin/python /tmp/diag6.py         # exit 0
+unset QT_QPA_PLATFORM; .venv/bin/python /tmp/diag4.py         # form ditutup saat pratinjau baca: exit 0
+QT_QPA_PLATFORM=offscreen .venv/bin/python /tmp/ui_walk.py    # alur UI penuh: exit 0
+```
+`/tmp/diag5.py` dan `/tmp/diag6.py` adalah alat A/B sekali pakai (`--nofix` meniru kode lama) yang mereproduksi
+tanda tangan crash di atas; pemeriksaan permanennya adalah tes di `tests/test_ui_smoke.py`.
+
+## Sheet yang belum ada bukan lagi "gagal" (laporan user, revisi v2 poin 2)
+- Keluhan: daftar catatan penuh `Sheet '16' tidak ada di file. Sheet yang tersedia: 01..14` — satu baris
+  merah per sheet yang belum ada, padahal laporan harian memang bertambah sheetnya dari hari ke hari.
+- Akar masalah: `core/extractor.py:_run_source` hanya memakai `SHEET_ABSENT` (warning) untuk template
+  `every_sheet`; profil yang memetakan nama sheet satu per satu (01..16) tetap jatuh ke
+  `SHEET_NOT_FOUND` (error) lewat `_absorb_failure`, jadi tiap field di sheet itu dapat status "gagal"
+  dan baris kosong di hasil.
+- Perbaikan satu tempat: cabang "tidak ada sheet yang cocok" disatukan — selalu `SHEET_ABSENT`
+  (warning, satu kali per template), **tanpa** item untuk field-nya, pesan tetap menyebut daftar sheet
+  yang tersedia. `SHEET_NOT_FOUND` tidak lagi dipakai engine v2 (disimpan seperti `MERGED_CELL` agar
+  berkas hasil v1 tetap terbaca); dicatat di `docs/SPEC.md`.
+- Bukti (profil memetakan sheet 01-16, file hanya berisi 01-14):
+  `SUMMARY {'sheets': 14, 'total_fields': 14, 'ok': 14, 'warning': 0, 'error': 0}` — 14 baris data,
+  nol baris gagal, hanya 2 catatan `SHEET_ABSENT` (sheet 15 & 16).
+- Tes: `test_missing_sheet_is_only_a_warning_without_a_row` (tanpa baris data, tanpa isu error) dan
+  `test_missing_sheet_does_not_stop_the_other_sheets` (sheet lain tetap terbaca) menggantikan
+  `test_sheet_not_found_lists_available_sheets`.
+- Gerbang: `pytest` 153 passed, `ruff check .` bersih, `mypy core` bersih (14 berkas).
+
+### Penanda merah di pohon Langkah 2 (permintaan lanjutan user)
+- Pilihan user: baris sheet di pohon (folder > sheet > data) ditulis **merah** kalau sheet itu
+  tidak ada di file contoh — "biar user tau datanya gak ada".
+- Aturan warna memakai aturan mesin yang sama, bukan duplikat: `core/extractor._sheet_matches`
+  dijadikan publik `sheet_matches` dan diimpor UI, jadi merah mengikuti mode pencocokan
+  (termasuk pola/cocok sebagian) yang dipakai ekstraksi. Merah hanya muncul bila file contoh
+  terbaca dan daftar sheet-nya tidak kosong; folder tanpa file contoh tidak diberi warna.
+- Baris merah juga membawa tooltip penjelasan di kedua bahasa (`s2.sheet_missing`).
+- `ui/sample_files.py:sheet_titles` kini di-cache per path + waktu ubah file: pohon meminta
+  daftar sheet setiap kali dibangun ulang, dan membuka ulang workbook besar tiap kali bikin
+  jendela terasa macet.
+- Bukti (probe offscreen sekali pakai, lalu dihapus): file berisi sheet 01-14 → baris 01-14
+  hitam, baris 15 & 16 `#c62828` + tooltip; setelah file diperbarui berisi 01-16 → `RED ROWS: []`
+  (cache ikut batal karena waktu ubah berubah).
+- Tes: `test_a_sheet_that_is_not_in_the_sample_file_is_shown_in_red` (baris hilang merah,
+  sheet yang ada tetap normal).
+- Gerbang akhir: `pytest` 154 passed, `ruff check .` bersih, `mypy core` bersih (14 berkas).
+- Terbuka: warna merah hanya penanda, tidak menghalangi simpan (disengaja).
+
+### Peringatan `SHEET_ABSENT` dibisukan di Langkah 3 (keputusan user)
+- Pilihan user: cukup baris sheet merah di Langkah 2 — daftar catatan Langkah 3 tidak
+  menampilkan peringatan sheet hilang sama sekali, tanpa baris hasil/N/A.
+- Implementasi: `ui/step3_run.py:_fill` menyaring isu berkode `SHEET_ABSENT` saat
+  merender daftar catatan. Engine tetap mencatatnya di `audit.issues`, jadi CLI
+  (`cli.py cmd_run`) tetap mencetak `[CEK  ] (sumber): Sheet '…' tidak ada di …`
+  dan file JSON hasil tidak berubah. Ringkasan Langkah 3 juga tidak terpengaruh
+  (isu sumber tidak dihitung di `summary`).
+- Tes: `test_missing_sheet_warning_stays_out_of_the_notes` (audit tetap punya
+  `SHEET_ABSENT`, isu sheet hilang tidak muncul, isu lain tetap muncul) dan
+  `test_run_prints_missing_sheet_notice` (CLI tetap memperingatkan).
+- Gerbang: `pytest` 156 passed, `ruff check .` bersih, `mypy core` bersih (14 berkas).
+
+## Struktur JSON per folder + nama data tanpa akhiran (keputusan user)
+- Keluhan: `RestanTBS_HI_9` tidak perlu akhiran angka di belakangnya, `key` selalu `null`,
+  dan JSON hanya dibedakan per sheet — penamaan datanya mau seperti nama folder.
+- Keputusan user (3 klarifikasi): (1) aturan "nama hasil unik per profil" dihapus — cukup unik
+  di dalam satu sheet, (2) `data` dikelompokkan per folder sumber lalu per sheet,
+  (3) field `key` hilang dari JSON bila tidak ada identitas, bukan `null`.
+- Akar masalah suffix: validasi `core/models.py` mewajibkan nama unik se-profil, jadi tombol
+  Duplikat sheet selalu memberi akhiran `_2`, `_3`, … (`_free_output_name`). `key` null bukan
+  bug: profil memang `"key": {"from": "none"}` dan UI belum punya pengatur identitas (SPEC poin
+  "UI belum punya tombol … key").
+- Implementasi:
+  - `core/models.py`: `seen_outputs` dipindah ke dalam satu sheet; nama sama antar sheet sah.
+  - `ui/step2_fields.py`: duplikat sheet menyalin nama apa adanya; `_free_output_name` dan
+    `import re` dihapus (tidak punya pemakai lagi).
+  - `core/output.py`: `build_document` mengelompokkan `{folder: {sheet: [entri, ...]}}`
+    (berupa daftar karena mode `rows` bisa >1 entri per sheet); `item_to_dict` menghapus
+    field `key` saat `item.key is None`.
+  - `core/api.py`: `GET /reports` membentangkan data berkelompok menjadi daftar entri;
+    filter `from`/`to` memakai `entry.get("key")`.
+  - `ui/step3_run.py`: tabel Langkah 3 diisi dari `result.items` supaya nama hasil yang sama di
+    sheet berbeda tetap tampil semua (peta datar `result.data` hanya menyimpan yang pertama dan
+    kini hanya dipakai pratinjau).
+  - `docs/SPEC.md` poin 1/2b/4 + `docs/schema/result-v2.json`: aturan baru, `data` object
+    berjenjang, `key` tidak wajib.
+- Profil lama dengan suffix tetap valid; user bisa menormalkan nama lewat form Ubah di UI
+  (tidak ada alat khusus yang dibuat).
+- Tes baru/ubah: `test_same_output_name_in_two_sheets_is_allowed`,
+  `test_duplicate_output_name_rejected` (kini dalam satu sheet),
+  `test_same_name_in_two_sheets_keeps_both_values`,
+  `test_data_is_grouped_by_folder_then_sheet`, `test_key_is_omitted_when_the_item_has_none`,
+  `test_date_filter_skips_entries_without_a_key`; duplikat sheet di UI kini tanpa suffix.
+- Gerbang: `pytest` 160 passed, `ruff check .` bersih, `mypy core` bersih (14 berkas).
+
+## Tabel Langkah 3 per folder + sheet tak terpakai tanpa warning (keputusan user)
+- Keluhan: di tampilan hasil file tidak dibedakan sehingga membingungkan — harusnya sama
+  seperti JSON: bedah per folder dulu, baru per sheet; dan sheet yang tidak dipakai profil
+  jangan memunculkan warning/error.
+- `ui/step3_run.py`: baris data kini diawali baris judul membentang (bold, abu) —
+  `📁 Folder: … — File: …` lalu `📄 Sheet: …` — diambil dari `result.items` (satu judul per
+  perubahan folder/sheet), persis urutan grup `{folder: {sheet: […]}}` di file JSON.
+  Kunci i18n baru `s3.group_folder_file`, `s3.group_folder`, `s3.group_sheet` (id + en).
+- `core/extractor.py`: sheet yang tidak diclaim template mana pun (mis. `Sheet1` sisa di
+  file MPD) hanya dicatat diam-diam di `meta.unmatched_sheets` dan tidak lagi menghasilkan
+  isu `SHEET_UNMATCHED` — biarkan tidak terpakai (keputusan user). Sheet yang sudah cocok
+  template tetapi gagal pola identitas tetap warning lewat `_mark_unmatched` (parameter
+  `key_cfg` kini wajib).
+- `docs/SPEC.md`: dua kalimat `SHEET_UNMATCHED`/`unmatched_sheets` disesuaikan (kode tetap
+  ada; pemakaiannya menyempit).
+- Tes: `test_run_fills_the_result_table` kini memeriksa 3 baris folder + 3 baris sheet +
+  15 baris data (bukan `rowCount == 15` lagi); baru
+  `test_unclaimed_sheet_is_listed_without_a_warning` (sheet tanpa template → meta saja,
+  `SHEET_UNMATCHED` tidak ada di audit).
+- Gerbang: `pytest` 161 passed, `ruff check .` bersih, `mypy core` bersih (14 berkas).
 
 

@@ -39,6 +39,22 @@ class ValueDirection(StrEnum):
     UP = "up"
 
 
+class SheetMode(StrEnum):
+    """How items are built from a sheet (see docs/SPEC.md revision v2)."""
+
+    SHEET = "sheet"  # one sheet = one item (daily report, 400+ fields)
+    ROWS = "rows"  # every data row = one item (cumulative table)
+
+
+class KeySource(StrEnum):
+    """Where an item's identity (`key`) comes from."""
+
+    NONE = "none"
+    LABEL = "label"  # a labelled cell inside the sheet
+    TABLE_COLUMN = "table_column"  # the date column of a table (rows mode)
+    SHEET_NAME = "sheet_name"  # parsed from the sheet name with `format`
+
+
 class DisambiguationMode(StrEnum):
     """How one occurrence is picked when a keyword appears more than once."""
 
@@ -102,6 +118,45 @@ class KeywordConfig(BaseModel):
         return self
 
 
+class KeyConfig(BaseModel):
+    """How an item gets its `key` (identity) — set once per profile."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    # JSON name is "from" (see docs/SPEC.md); the Python attribute avoids the keyword.
+    source: KeySource = Field(default=KeySource.NONE, alias="from")
+    label: str = ""
+    type: DataType = DataType.TEXT
+    format: str = ""  # sheet-name pattern: DD, D MMM, DD-MM-YYYY
+    fallback: KeySource = KeySource.NONE  # used when the main source is unreadable
+    # Optional regex over the file name; named groups `month`/`year` fill the date.
+    file_pattern: str = ""
+
+    @field_validator("label", "format", "file_pattern")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _check_source(self) -> KeyConfig:
+        if self.source in {KeySource.LABEL, KeySource.TABLE_COLUMN} and not self.label:
+            raise ValueError("Tulisan penanda identitas (mis. 'Tanggal') belum diisi.")
+        if self.source is KeySource.SHEET_NAME and not self.format:
+            raise ValueError(
+                "Pola nama sheet untuk identitas belum diisi (contoh: DD atau DD-MM-YYYY)."
+            )
+        if self.fallback is KeySource.SHEET_NAME and not self.format:
+            raise ValueError(
+                "Pola nama sheet untuk cadangan identitas belum diisi (contoh: DD)."
+            )
+        if self.file_pattern:
+            try:
+                re.compile(self.file_pattern)
+            except re.error as exc:
+                raise ValueError(f"Pola nama file tidak valid ({exc}).") from exc
+        return self
+
+
 class FieldConfig(BaseModel):
     """One extraction rule: a unique output name plus row/column keywords."""
 
@@ -127,8 +182,10 @@ class FieldConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_keywords(self) -> FieldConfig:
-        if not self.row_keyword.text:
-            raise ValueError(f"Field '{self.output_name}': 'Cari baris yang bertuliskan...' belum diisi.")
+        if not self.row_keyword.text and not self._col_text:
+            raise ValueError(
+                f"Field '{self.output_name}': 'Cari baris yang bertuliskan...' belum diisi."
+            )
         if self.col_keyword is not None and not self.col_keyword.text:
             raise ValueError(
                 f"Field '{self.output_name}': 'Cari kolom yang bertuliskan...' kosong - "
@@ -136,12 +193,23 @@ class FieldConfig(BaseModel):
             )
         return self
 
+    @property
+    def _col_text(self) -> str:
+        return self.col_keyword.text if self.col_keyword is not None else ""
+
 
 class SheetConfig(BaseModel):
-    """A sheet inside a source folder; the name may match with any MatchMode."""
+    """A sheet template inside a source folder; the name may match with any MatchMode.
+
+    `every_sheet` applies the same mapping to every sheet matching `name` (daily
+    reports: one sheet per day, the same fields everywhere). `mode` decides whether
+    one sheet or every data row becomes an item.
+    """
 
     name: str
     match_mode: MatchMode = MatchMode.EXACT
+    every_sheet: bool = False
+    mode: SheetMode = SheetMode.SHEET
     fields: list[FieldConfig] = Field(default_factory=list)
 
     @field_validator("name")
@@ -151,6 +219,20 @@ class SheetConfig(BaseModel):
         if not value:
             raise ValueError("Nama sheet tidak boleh kosong.")
         return value
+
+    @model_validator(mode="after")
+    def _check_mode(self) -> SheetConfig:
+        for field in self.fields:
+            if self.mode is SheetMode.ROWS and not field.col_keyword:
+                raise ValueError(
+                    f"Field '{field.output_name}': pada data berbentuk tabel, "
+                    "'Cari kolom yang bertuliskan...' wajib diisi."
+                )
+            if self.mode is SheetMode.SHEET and not field.row_keyword.text:
+                raise ValueError(
+                    f"Field '{field.output_name}': 'Cari baris yang bertuliskan...' belum diisi."
+                )
+        return self
 
 
 class SourceConfig(BaseModel):
@@ -177,6 +259,7 @@ class Profile(BaseModel):
     schema_version: int = 1
     name: str
     input_root: str | None = None
+    key: KeyConfig = Field(default_factory=KeyConfig)
     sources: list[SourceConfig] = Field(default_factory=list)
 
     @field_validator("name")
@@ -197,7 +280,6 @@ class Profile(BaseModel):
     @model_validator(mode="after")
     def _check_unique_names(self) -> Profile:
         seen_sources: set[str] = set()
-        seen_outputs: set[str] = set()
         for source in self.sources:
             if source.folder in seen_sources:
                 raise ValueError(f"Sumber folder '{source.folder}' muncul lebih dari sekali.")
@@ -209,10 +291,14 @@ class Profile(BaseModel):
                         f"Sheet '{sheet.name}' muncul lebih dari sekali di sumber '{source.folder}'."
                     )
                 seen_sheets.add(sheet.name)
+                # Per sheet only: one item's values are keyed by result name, and the
+                # daily-report case reuses the same names on every date's sheet.
+                seen_outputs: set[str] = set()
                 for field in sheet.fields:
                     if field.output_name in seen_outputs:
                         raise ValueError(
-                            f"Nama hasil '{field.output_name}' dipakai lebih dari satu kali dalam profil."
+                            f"Nama hasil '{field.output_name}' dipakai lebih dari satu kali "
+                            f"dalam sheet '{sheet.name}'."
                         )
                     seen_outputs.add(field.output_name)
         return self

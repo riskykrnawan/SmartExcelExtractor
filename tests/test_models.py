@@ -106,19 +106,38 @@ class TestProfileValidation:
         assert Profile.model_validate(profile.model_dump()) == profile
 
     def test_duplicate_output_name_rejected(self) -> None:
+        # Inside one sheet a repeat would silently drop a value (values are keyed by name).
         with pytest.raises(ValidationError, match="dipakai lebih dari satu kali"):
             self._profile(
                 sources=[
                     SourceConfig(
                         folder="prod_harian",
-                        sheets=[SheetConfig(name="Produksi", fields=[field("prod_hi")])],
-                    ),
-                    SourceConfig(
-                        folder="lap_harian",
-                        sheets=[SheetConfig(name="Laporan", fields=[field("prod_hi")])],
+                        sheets=[
+                            SheetConfig(
+                                name="Produksi",
+                                fields=[field("prod_hi"), field("prod_hi")],
+                            )
+                        ],
                     ),
                 ]
             )
+
+    def test_same_output_name_in_two_sheets_is_allowed(self) -> None:
+        profile = self._profile(
+            sources=[
+                SourceConfig(
+                    folder="prod_harian",
+                    sheets=[
+                        SheetConfig(name="01", fields=[field("prod_hi")]),
+                        SheetConfig(name="02", fields=[field("prod_hi")]),
+                    ],
+                ),
+            ]
+        )
+        assert [sheet.fields[0].output_name for sheet in profile.sources[0].sheets] == [
+            "prod_hi",
+            "prod_hi",
+        ]
 
     def test_duplicate_source_folder_rejected(self) -> None:
         with pytest.raises(ValidationError, match="lebih dari sekali"):

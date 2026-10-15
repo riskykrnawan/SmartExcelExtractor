@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from core.models import FieldConfig, Profile, SheetConfig, SourceConfig
 from ui.i18n import t
 from ui.sample_files import SampleFile, sample_files
-from ui.worker import PreviewWorker
+from ui.worker import PreviewWorker, start_worker
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ class PreviewPane(QWidget):
         self._worker.finished.connect(self._on_finished)
         self.status_label.setText(t("pv.loading"))
         self.status_label.setStyleSheet("font-size: 15px;")
-        self._worker.start()
+        start_worker(self._worker)
 
     def _on_success(self, request_id: int, payload: dict) -> None:
         if request_id != self._request_seq:
@@ -231,10 +231,7 @@ class PreviewPane(QWidget):
         self._show_placeholder(message)
 
     def _on_finished(self) -> None:
-        worker = self.sender()
-        if worker is not None:
-            worker.deleteLater()
-        self._worker = None  # deleteLater() invalidates the wrapper; never touch it again
+        self._worker = None  # start_worker() owns the thread until it has stopped
         if self._pending:
             self._pending = False
             self._debounce.start()

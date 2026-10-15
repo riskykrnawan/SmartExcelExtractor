@@ -10,6 +10,9 @@ from core.models import Profile
 
 logger = logging.getLogger(__name__)
 
+#: path -> (file modification time, sheet names). See sheet_titles().
+_TITLE_CACHE: dict[Path, tuple[float, list[str]]] = {}
+
 
 @dataclass(frozen=True)
 class SampleFile:
@@ -43,13 +46,26 @@ def sample_files(profile: Profile) -> list[SampleFile]:
 
 
 def sheet_titles(sample: SampleFile) -> list[str]:
-    """Sheet names inside a sample file; empty when the file cannot be opened."""
+    """Sheet names inside a sample file; empty when the file cannot be opened.
+
+    Cached per file and modification time: the tree in Langkah 2 asks for these on every
+    rebuild, and reopening a large workbook each time made the window feel stuck.
+    """
+    try:
+        stamp = sample.path.stat().st_mtime
+    except OSError:
+        return []
+    cached = _TITLE_CACHE.get(sample.path)
+    if cached is not None and cached[0] == stamp:
+        return list(cached[1])
     try:
         wb = load_workbook_pair(sample.path)
     except Exception:  # noqa: BLE001 - the dropdown simply stays manual
         logger.warning("Cannot read sheet names of %s", sample.path)
         return []
     try:
-        return wb.sheet_titles()
+        titles = wb.sheet_titles()
     finally:
         wb.close()
+    _TITLE_CACHE[sample.path] = (stamp, titles)
+    return list(titles)

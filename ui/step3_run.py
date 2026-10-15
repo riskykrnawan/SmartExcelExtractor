@@ -5,6 +5,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -20,10 +21,10 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
-from core.audit import RunResult
+from core.audit import IssueCode, RunResult
 from core.models import Profile
 from ui.i18n import t
-from ui.worker import RunWorker
+from ui.worker import RunWorker, start_worker
 
 
 def _status_label(status: str) -> tuple[str, QColor, QColor]:
@@ -138,13 +139,11 @@ class StepRun(QWizardPage):
         self._worker.succeeded.connect(self._on_succeeded)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._on_worker_finished)
-        self._worker.start()
+        start_worker(self._worker)
 
     def _on_worker_finished(self) -> None:
-        """Drop the finished thread; deleteLater() invalidates the wrapper we hold."""
-        worker, self._worker = self._worker, None
-        if worker is not None:
-            worker.deleteLater()
+        """Let go of the finished job; start_worker() releases the thread once it stops."""
+        self._worker = None
 
     def stop(self) -> None:
         """Wait briefly for a running job so closing the window stays safe."""
@@ -179,29 +178,41 @@ class StepRun(QWizardPage):
                 error=summary["error"],
             )
         )
-        entries = list(result.data.items())
-        self.table.setRowCount(len(entries))
-        for row, (name, entry) in enumerate(entries):
+        # Same grouping as the JSON file: folder (with its file) first, then sheet,
+        # then the fields. Per items, not result.data: a result name may repeat.
+        rows = self._grouped_rows(result)
+        self.table.clearSpans()
+        self.table.setRowCount(len(rows))
+        for row, (kind, text, entry) in enumerate(rows):
+            if entry is None:
+                self._fill_group_row(row, kind, text)
+                continue
             label, text_colour, colour = _status_label(entry["status"])
             source = entry["source"]
             location = entry["location"]
             value = entry["value"]
             cells = [
-                name,
+                text,
                 t("s3.value_empty") if value is None else str(value),
                 label,
                 source.get("file") or t("s3.source_none"),
                 source.get("sheet") or "-",
                 location.get("value_address") or "-",
             ]
-            for column, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+            for column, cell in enumerate(cells):
+                item = QTableWidgetItem(cell)
                 item.setBackground(colour)
                 item.setForeground(text_colour)
                 self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()
         self.issues_list.clear()
-        issues = result.audit.get("issues", [])
+        # SHEET_ABSENT stays in the audit (CLI prints it); the red sheet rows in
+        # step 2 already tell the user the sheet is not there yet.
+        issues = [
+            issue
+            for issue in result.audit.get("issues", [])
+            if issue.get("code") != IssueCode.SHEET_ABSENT.value
+        ]
         for issue in sorted(issues, key=lambda item: item.get("level") != "error"):
             level = t("s3.level_error") if issue.get("level") == "error" else t("s3.level_warning")
             self.issues_list.addItem(
@@ -209,6 +220,46 @@ class StepRun(QWizardPage):
             )
         if not issues:
             self.issues_list.addItem(t("s3.no_issues"))
+
+    @staticmethod
+    def _grouped_rows(result: RunResult) -> list[tuple[str, str, dict | None]]:
+        """Flat row list: group rows (entry None) and one row per field."""
+        rows: list[tuple[str, str, dict | None]] = []
+        folder_key: tuple[str, str] | None = None
+        sheet_key: tuple[str, str, str] | None = None
+        for item in result.items:
+            item_folder = (item.folder or "", item.file or "")
+            item_sheet = (*item_folder, item.sheet)
+            if item_folder != folder_key:
+                folder_key = item_folder
+                sheet_key = None
+                text = (
+                    t(
+                        "s3.group_folder_file",
+                        folder=item.folder or t("s3.source_none"),
+                        file=item.file,
+                    )
+                    if item.file
+                    else t("s3.group_folder", folder=item.folder or t("s3.source_none"))
+                )
+                rows.append(("folder", text, None))
+            if item_sheet != sheet_key:
+                sheet_key = item_sheet
+                rows.append(("sheet", t("s3.group_sheet", sheet=item.sheet), None))
+            rows.extend(("field", name, field.to_dict()) for name, field in item.fields.items())
+        return rows
+
+    def _fill_group_row(self, row: int, kind: str, text: str) -> None:
+        """One spanning header row: the folder (and its file), then the sheet."""
+        item = QTableWidgetItem(text)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setBackground(QColor("#E0E0E0" if kind == "folder" else "#EEEEEE"))
+        item.setForeground(QColor("#212121"))
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        self.table.setItem(row, 0, item)
+        self.table.setSpan(row, 0, 1, self.table.columnCount())
 
     def _save_copy(self) -> None:
         if self._result_path is None:

@@ -205,7 +205,13 @@ class TestVariantA:
         return run_extraction(profile_for(input_a))
 
     def test_summary_counts(self, result: RunResult) -> None:
-        assert result.summary == {"total_fields": 15, "ok": 9, "warning": 5, "error": 1}
+        assert result.summary == {
+            "sheets": 3,  # v2: Produksi, Laporan 01-10, Penjualan
+            "total_fields": 15,
+            "ok": 10,
+            "warning": 4,
+            "error": 1,
+        }
 
     def test_prod_hi_value_and_location(self, result: RunResult) -> None:
         entry = result.data["prod_hi"]
@@ -243,7 +249,9 @@ class TestVariantA:
         assert entry["value_meta"]["merged"] is True
         assert entry["value_meta"]["merged_range"] == "K57:L57"
         assert entry["location"]["value_address"] == "L57"
-        assert issue_codes(result, "prod_util") == {"MERGED_CELL"}
+        # v2: the anchor value is the correct value, so a merged read is not a warning.
+        assert entry["status"] == "ok"
+        assert issue_codes(result, "prod_util") == set()
 
     def test_hidden_row_is_flagged_but_not_an_issue(self, result: RunResult) -> None:
         entry = result.data["prod_scrap"]
@@ -358,16 +366,63 @@ class TestVariantB:
         }
 
 
+class TestResultNames:
+    def test_same_name_in_two_sheets_keeps_both_values(self, tmp_path: Path) -> None:
+        """A result name must only be unique inside one sheet (docs/SPEC.md poin 1)."""
+        folder = tmp_path / "sumber"
+        folder.mkdir(parents=True)
+        wb = Workbook()
+        for title in ("01", "02"):
+            ws = wb.active if title == "01" else wb.create_sheet(title)
+            ws.title = title
+            ws["A3"] = "Produksi Harian"
+            ws["B1"] = "Total"
+            ws["B3"] = 99
+        wb.save(folder / "harian.xlsx")
+        profile = Profile(
+            name="Harian",
+            input_root=str(tmp_path),
+            sources=[
+                SourceConfig(
+                    folder="sumber",
+                    sheets=[
+                        SheetConfig(name="01", fields=[simple_field("harian")]),
+                        SheetConfig(name="02", fields=[simple_field("harian")]),
+                    ],
+                )
+            ],
+        )
+        result = run_extraction(profile)
+        assert [item.sheet for item in result.items] == ["01", "02"]
+        assert [item.values()["harian"] for item in result.items] == [99, 99]
+
+
 class TestSheetErrors:
-    def test_sheet_not_found_lists_available_sheets(self, input_a: Path) -> None:
+    def test_missing_sheet_is_only_a_warning_without_a_row(self, input_a: Path) -> None:
         profile = single_field_profile(input_a, simple_field(), sheet="TidakAda")
         result = run_extraction(profile)
-        entry = result.data["satu"]
-        assert entry["status"] == "error"
-        assert entry["value"] is None
-        assert "SHEET_NOT_FOUND" in issue_codes(result, "satu")
-        message = next(i["message"] for i in result.audit["issues"] if i["field"] == "satu")
-        assert "Sheet yang tersedia" in message
+        assert result.data == {}  # nothing is invented for a sheet that is not there
+        assert result.summary["total_fields"] == 0
+        assert result.summary["error"] == 0
+        assert issue_codes(result, "satu") == set()
+        assert "SHEET_ABSENT" in issue_codes(result, None)
+        assert all(i["level"] == "warning" for i in result.audit["issues"])
+        message = next(
+            i["message"] for i in result.audit["issues"] if i["code"] == "SHEET_ABSENT"
+        )
+        assert "Sheet yang tersedia: Produksi" in message
+
+    def test_missing_sheet_does_not_stop_the_other_sheets(self, input_a: Path) -> None:
+        field = FieldConfig(
+            output_name="dua",
+            row_keyword=row_by_address("Produksi Harian", "I45"),
+            col_keyword=KeywordConfig(text="Total"),
+        )
+        profile = single_field_profile(input_a, simple_field(), sheet="TidakAda")
+        profile.sources[0].sheets.append(SheetConfig(name="Produksi", fields=[field]))
+        result = run_extraction(profile)
+        assert result.data["dua"]["value"] == 1523.5
+        assert result.summary["error"] == 0
 
     def test_ambiguous_sheet_name_never_guesses(self, tmp_path: Path) -> None:
         folder = tmp_path / "sumber"
@@ -380,6 +435,22 @@ class TestSheetErrors:
         result = run_extraction(profile)
         assert "SHEET_AMBIGUOUS" in issue_codes(result, "satu")
         assert result.data["satu"]["value"] is None
+
+    def test_unclaimed_sheet_is_listed_without_a_warning(self, tmp_path: Path) -> None:
+        """A sheet the profile does not use stays untouched: meta only, no issue."""
+        folder = tmp_path / "sumber"
+        folder.mkdir(parents=True)
+        wb = Workbook()
+        wb.active.title = "Data"
+        wb.create_sheet("Sheet1")
+        wb.save(folder / "lap.xlsx")
+        profile = single_field_profile(tmp_path, simple_field(), folder="sumber", sheet="Data")
+        result = run_extraction(profile)
+        assert "SHEET_UNMATCHED" not in issue_codes(result, None)
+        assert any(
+            entry["sheet"] == "Sheet1" and entry["reason"] == "tidak cocok template mana pun"
+            for entry in result.meta["unmatched_sheets"]
+        )
 
 
 class TestFileErrors:

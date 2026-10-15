@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import gc
 import os
+import threading
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -12,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6", reason="antarmuka memerlukan PySide6")
 
-from PySide6.QtCore import QMimeData, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QMimeData, QPointF, QThread, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QDropEvent, QPalette  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
@@ -22,12 +24,15 @@ from PySide6.QtWidgets import (  # noqa: E402
     QTreeWidgetItem,
 )
 
+from core.extractor import run_extraction  # noqa: E402
+from core.models import FieldConfig, KeywordConfig, SheetConfig  # noqa: E402
 from core.profiles import save_profile  # noqa: E402
-from tests.test_extractor import profile_for  # noqa: E402
+from tests.test_extractor import profile_for, simple_field, single_field_profile  # noqa: E402
 from ui.field_form import HIDDEN_MODE_INDEX, FieldFormDialog  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
 from ui.preview import _BOX_BG, _TEXT_ON_LIGHT, PreviewPane  # noqa: E402
-from ui.step2_fields import SheetDialog, _free_output_name  # noqa: E402
+from ui.step2_fields import SheetDialog, _MISSING_SHEET_COLOUR  # noqa: E402
+from ui.worker import _LIVE_WORKERS, start_worker  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -84,7 +89,14 @@ def test_run_fills_the_result_table(window: MainWindow) -> None:
     assert worker is not None
     assert worker.wait(60_000)
     QApplication.processEvents()
-    assert window.page_run.table.rowCount() == 15
+    first_column = [
+        window.page_run.table.item(row, 0).text()
+        for row in range(window.page_run.table.rowCount())
+    ]
+    assert first_column[0].startswith("📁 ")  # the folder (with its file) comes first
+    assert sum(text.startswith("📁 ") for text in first_column) == 3  # one per folder
+    assert sum(text.startswith("📄 ") for text in first_column) == 3  # one per sheet
+    assert len(first_column) == 15 + 3 + 3  # 15 data rows plus the group rows
     assert "need review" in window.page_run.summary_label.text()
     assert window.page_run.issues_list.count() >= 1
     result_path = window.page_run._result_path
@@ -151,6 +163,40 @@ def test_closed_dialogs_are_torn_down_by_qt_not_the_gc(
     assert page.tree.topLevelItemCount() == 3
 
 
+class _SlowWorker(QThread):
+    """Stays inside run() long enough for the interface around it to be torn down."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+
+    def run(self) -> None:
+        self.entered.set()
+        QThread.msleep(300)
+
+
+def test_a_started_worker_outlives_the_widget_that_started_it(app: QApplication) -> None:
+    """Regression: closing a form while its preview read aborted the whole app (SIGABRT).
+
+    PySide6 frees a QThread with its last Python reference, and the last reference here
+    belongs to the bound run() inside the thread: freeing it mid-run kills the process.
+    """
+    worker = _SlowWorker()
+    reference = weakref.ref(worker)
+    start_worker(worker)
+    assert worker.entered.wait(5_000), "the worker thread never started"
+    assert worker in _LIVE_WORKERS, "the interface does not hold the running worker"
+
+    del worker  # as if the form holding it had just been closed
+    gc.collect()
+    running = reference()
+    assert running is not None, "the running worker died with the widget that started it"
+
+    assert running.wait(10_000)
+    QApplication.processEvents()  # deliver finished, which releases the held worker
+    assert _LIVE_WORKERS == set(), "the finished worker was never released"
+
+
 def test_duplicate_sheet_copies_every_field_to_a_new_sheet(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,27 +225,73 @@ def test_duplicate_sheet_copies_every_field_to_a_new_sheet(
     original, copy = source.sheets
     assert len(copy.fields) == len(original.fields) > 0
     for before, after in zip(original.fields, copy.fields, strict=True):
-        assert after.output_name == f"{before.output_name}_2"  # SPEC: unique per profile
+        assert after.output_name == before.output_name  # names must only be unique per sheet
         assert after.row_keyword.text == before.row_keyword.text
         assert after.col_keyword == before.col_keyword
 
-    # duplicating the copy must not stack suffixes (`prod_hi_2_2`) nor reuse taken names
+    # duplicating the copy keeps the same names too (uniqueness is per sheet, not per profile)
     page.tree.topLevelItem(0).child(1).setSelected(True)
     page.duplicate_button.click()
     third = page._get_profile().sources[0].sheets[2]
     assert third.name == "Produksi 03-10"
     assert [field.output_name for field in third.fields] == [
-        f"{field.output_name}_3" for field in original.fields
+        field.output_name for field in original.fields
     ]
     assert warnings == []
 
 
-def test_free_output_name_skips_a_name_the_profile_already_uses() -> None:
-    assert _free_output_name("prod_hi_copy", set()) == "prod_hi_copy"
-    assert _free_output_name("prod_hi_copy", {"prod_hi_copy"}) == "prod_hi_copy_2"
-    assert _free_output_name("prod_hi_copy", {"prod_hi_copy", "prod_hi_copy_2"}) == "prod_hi_copy_3"
-    assert _free_output_name("prod_hi_2", {"prod_hi", "prod_hi_2"}) == "prod_hi_3"
-    assert _free_output_name("harga_2024", {"harga_2024"}) == "harga_2024_2"
+def test_a_sheet_that_is_not_in_the_sample_file_is_shown_in_red(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing sheet = red row with a hint, not an error (user request + SPEC v2 poin 2)."""
+    page = window.page_fields
+
+    def accept_sheet(dialog: SheetDialog) -> int:
+        dialog.name_combo.setCurrentText("16")
+        dialog.accept()
+        return dialog.result()
+
+    page.tree.topLevelItem(0).setSelected(True)
+    monkeypatch.setattr(SheetDialog, "exec", accept_sheet)
+    page.sheet_button.click()
+
+    source_item = page.tree.topLevelItem(0)  # re-fetch: refresh() rebuilt the tree
+    rows = {
+        source_item.child(index).text(0): source_item.child(index)
+        for index in range(source_item.childCount())
+    }
+    missing = rows["Sheet: 16"]
+    present = rows["Sheet: Produksi"]
+    assert missing.foreground(0).color() == _MISSING_SHEET_COLOUR
+    assert "16" in missing.toolTip(0)  # the hint names the sheet...
+    assert "Produksi" in present.text(0)
+    assert present.foreground(0).color() != _MISSING_SHEET_COLOUR  # ...but a present sheet stays plain
+
+
+def test_missing_sheet_warning_stays_out_of_the_notes(window: MainWindow, input_a: Path) -> None:
+    """SHEET_ABSENT reaches the audit (CLI prints it) but never the step 3 notes list."""
+    profile = single_field_profile(input_a, simple_field(), sheet="TidakAda")
+    profile.sources[0].sheets.append(
+        SheetConfig(
+            name="Produksi",
+            fields=[
+                FieldConfig(
+                    output_name="kosong",
+                    row_keyword=KeywordConfig(text="Catatan"),
+                    col_keyword=KeywordConfig(text="Total"),
+                )
+            ],
+        )
+    )
+    result = run_extraction(profile)
+    assert "SHEET_ABSENT" in {issue["code"] for issue in result.audit["issues"]}
+    window.page_run._fill(result)
+    notes = [
+        window.page_run.issues_list.item(row).text()
+        for row in range(window.page_run.issues_list.count())
+    ]
+    assert all("tidak ada di" not in note for note in notes)  # the sheet-absent message
+    assert any("Tidak ada nilai" in note for note in notes)  # other notes still shown
 
 
 def _drag_drop(

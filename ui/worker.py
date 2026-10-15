@@ -20,6 +20,32 @@ logger = logging.getLogger(__name__)
 #: Cells shown around the result in the mini-grid (5 on each side).
 GRID_RADIUS = 5
 
+#: Started workers, held here so a thread outlives the widget that started it: PySide6
+#: frees a QThread with its last Python reference, and freeing a running thread aborts
+#: the process (a form may be closed while its preview is still reading).
+_LIVE_WORKERS: set[QThread] = set()
+
+
+def start_worker(worker: QThread) -> None:
+    """Start `worker` and hold it until its thread has really stopped."""
+    _LIVE_WORKERS.add(worker)
+    worker.finished.connect(lambda: _release(worker))
+    worker.start()
+
+
+def _release(worker: QThread) -> None:
+    """Let go of a finished worker; `finished` can arrive before run() returns."""
+    worker.wait()
+    _LIVE_WORKERS.discard(worker)
+
+
+def wait_for_workers(timeout_ms: int = 10_000) -> None:
+    """Join the workers still running when the app quits; nothing may free a live thread."""
+    for worker in list(_LIVE_WORKERS):
+        if not worker.wait(timeout_ms):
+            worker.terminate()  # last resort at exit: a live thread must not be freed
+            worker.wait(2_000)
+
 
 class RunWorker(QThread):
     """Run the full extraction and write the JSON result file."""

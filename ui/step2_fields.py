@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import re
 from typing import TypeVar
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QColor, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -26,33 +25,18 @@ from PySide6.QtWidgets import (
 )
 from pydantic import ValidationError
 
+from core.extractor import sheet_matches
 from core.models import FieldConfig, MatchMode, Profile, SheetConfig, SourceConfig
 from core.profiles import format_validation_error, replace_sources
 from ui.field_form import FieldFormDialog, fill_combo, reference_mode_labels
 from ui.i18n import t
-from ui.sample_files import sample_files, sheet_titles
+from ui.sample_files import SampleFile, sample_files, sheet_titles
 
 
-_NUMBERED_SUFFIX = re.compile(r"_\d+$")
+#: Sheet rows whose sheet is not in the sample file yet (see refresh()).
+_MISSING_SHEET_COLOUR = QColor("#C62828")
 
 T = TypeVar("T")
-
-
-def _free_output_name(base: str, taken: set[str]) -> str:
-    """A free result name: `base` if unused, else `base_2`, `base_3`...
-
-    A trailing number is only read as a counter when the plain stem is already used, so
-    duplicating a copy continues the series (`prod_hi_2` -> `prod_hi_3`) while a name such
-    as `harga_2024` keeps its year.
-    """
-    stem = _NUMBERED_SUFFIX.sub("", base)
-    if stem not in taken:
-        stem = base
-    name, index = stem, 2
-    while name in taken:
-        name = f"{stem}_{index}"
-        index += 1
-    return name
 
 
 def _moved(items: list[T], moved: int, target: int, below: bool) -> list[T]:
@@ -218,6 +202,9 @@ class StepData(QWizardPage):
         for source in profile.sources:
             if not source.enabled:
                 continue
+            sample = self._sample_for(profile, source.folder)
+            titles = sheet_titles(sample) if sample is not None else []
+            sample_name = sample.path.name if sample is not None else ""
             folder_key = ("source", source.folder)
             src_item = QTreeWidgetItem([source.folder])
             src_item.setFlags(src_item.flags() & ~Qt.ItemIsDragEnabled)  # a folder stays put
@@ -229,6 +216,13 @@ class StepData(QWizardPage):
                 sheet_key = ("sheet", source.folder, sheet.name)
                 sheet_item = QTreeWidgetItem([t("s2.sheet_prefix", name=sheet.name)])
                 sheet_item.setData(0, Qt.UserRole, sheet_key)
+                if titles and not any(sheet_matches(title, sheet) for title in titles):
+                    # Not an error, just "the data is not there yet" (SPEC v2 poin 2):
+                    # the row goes red so the user sees it without reading the notes.
+                    sheet_item.setForeground(0, _MISSING_SHEET_COLOUR)
+                    sheet_item.setToolTip(
+                        0, t("s2.sheet_missing", name=sheet.name, file=sample_name)
+                    )
                 src_item.addChild(sheet_item)
                 rows[sheet_key] = sheet_item
                 for field in sheet.fields:
@@ -355,12 +349,18 @@ class StepData(QWizardPage):
         self._apply_sources(sources)
 
     @staticmethod
-    def _sheet_titles(profile: Profile, folder: str) -> list[str]:
-        """Sheet names of the newest sample file in `folder` (empty when there is none)."""
+    def _sample_for(profile: Profile, folder: str) -> SampleFile | None:
+        """The newest sample file of `folder` (None when the folder has no Excel file)."""
         for sample in sample_files(profile):
             if sample.folder == folder:
-                return sheet_titles(sample)
-        return []
+                return sample
+        return None
+
+    @staticmethod
+    def _sheet_titles(profile: Profile, folder: str) -> list[str]:
+        """Sheet names of the newest sample file in `folder` (empty when there is none)."""
+        sample = StepData._sample_for(profile, folder)
+        return sheet_titles(sample) if sample is not None else []
 
     def _target_folder(self, profile: Profile) -> str | None:
         """The folder a new sheet belongs to: the selection, or the only checked one."""
@@ -424,10 +424,10 @@ class StepData(QWizardPage):
         self._duplicate_field()
 
     def _duplicate_sheet(self, folder: str, sheet_name: str) -> None:
-        """Copy every field of a sheet to a new sheet: same rules, another sheet name.
+        """Copy every field of a sheet to a new sheet: same rules, same result names.
 
         The daily-report case: one sheet per date, so only the sheet name changes and the
-        rules are reused. Result names must stay unique per profile (SPEC), hence a suffix.
+        rules are reused (a result name only has to be unique within one sheet).
         """
         profile = self._get_profile()
         sheet, _field = self._find(profile, folder, sheet_name, None)
@@ -439,18 +439,7 @@ class StepData(QWizardPage):
         dialog.deleteLater()  # Qt owns the teardown; GC-collected dialogs segfault (PySide6)
         if not accepted or not name:
             return
-        taken = {
-            item.output_name
-            for source in profile.sources
-            for config in source.sheets
-            for item in config.fields
-        }
-        fields: list[FieldConfig] = []
-        for field in sheet.fields:
-            copy = field.model_copy(deep=True)
-            copy.output_name = _free_output_name(field.output_name, taken)
-            taken.add(copy.output_name)
-            fields.append(copy)
+        fields: list[FieldConfig] = [field.model_copy(deep=True) for field in sheet.fields]
         sources: list[SourceConfig] = []
         for source in profile.sources:
             if source.folder != folder:

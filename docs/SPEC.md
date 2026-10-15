@@ -38,7 +38,7 @@ Per sub-folder, user bisa menambah **banyak sheet**. Pilih nama sheet dari dropd
 
 ## 4. Field (aturan ekstraksi)
 Tiap sheet punya **banyak field**. Satu field berisi:
-- **Nama hasil** (`output_name`): nama sendiri yang bebas ditentukan user, mis. "Produksi Harian" disimpan sebagai `prod_hi`. Validasi: unik per profil, hanya huruf/angka/underscore, tidak boleh kosong.
+- **Nama hasil** (`output_name`): nama sendiri yang bebas ditentukan user, mis. "Produksi Harian" disimpan sebagai `prod_hi`. Validasi: unik di dalam satu sheet (boleh sama nama di sheet lain — kasus laporan harian), hanya huruf/angka/underscore, tidak boleh kosong.
 - **Keyword Baris** dan **Keyword Kolom**.
   - Nilai diambil dari **titik temu**: baris tempat keyword-baris ditemukan dan kolom tempat keyword-kolom ditemukan.
   - Keyword Kolom boleh dikosongkan. Pada kasus itu sediakan opsi sederhana "Ambil nilai di sel sebelah kanan keyword" (dan variasi: kiri/bawah/atas, geser N sel) untuk data non-tabular berbentuk "label: nilai".
@@ -149,7 +149,7 @@ Tambahan di UI: tombol **"Simpan Laporan Audit"** (CSV atau HTML sederhana) beri
 Wizard / layout 3 panel yang ramah non-IT:
 1. **Langkah 1 – Sumber:** pilih folder induk → centang sub-folder.
 2. **Langkah 2 – Data yang diambil:** pohon `Sub-folder > Sheet > Field`,
-   dengan tombol "+ Tambah Sheet", "+ Tambah Data", duplikasi field/sheet (duplikasi sheet menyalin semua field-nya ke sheet lain dengan aturan yang sama — kasus laporan harian yang satu tanggal satu sheet — dan nama hasil salinan harus tetap unik, jadi diberi akhiran angka), hapus.
+   dengan tombol "+ Tambah Sheet", "+ Tambah Data", duplikasi field/sheet (duplikasi sheet menyalin semua field-nya ke sheet lain dengan aturan yang sama — kasus laporan harian yang satu tanggal satu sheet — dan salinan memakai nama hasil yang sama dengan sheet aslinya, karena nama hanya perlu unik di dalam satu sheet), hapus.
    Urutan sheet dan field bisa diubah dengan **menggeser barisnya** (drag and drop), tanpa mengubah isi aturannya. Urutan field menentukan urutan hasil (baris pada tabel hasil dan urutan kunci di file JSON). Hanya boleh geser di dalam folder yang sama (untuk sheet) dan di dalam sheet yang sama (untuk field); geseran lain diabaikan tanpa pesan. Baris yang sedang dibuka pengguna (sub-folder/sheet) tetap terbuka setelah setiap perubahan, dan baris yang baru ditambah/diubah selalu ikut terbuka serta tersorot.
 3. **Langkah 3 – Jalankan & Periksa:** tombol "Jalankan Ekstraksi", ringkasan status berwarna (🟢 OK / 🟡 Perlu dicek / 🔴 Gagal), tabel hasil, dan tombol simpan JSON.
 
@@ -178,3 +178,116 @@ Jangan langsung menulis semua kode. Kerjakan bertahap dan **berhenti di akhir ti
 - **Fase 3:** laporan audit, perbandingan antar run, packaging `.exe`, README.
 
 Mulai dari **Fase 0** sekarang.
+
+---
+
+# REVISI v2 (perilaku ekstraksi, skema output, integrasi)
+
+Revisi ini menggantikan aturan berikut di dokumen di atas: merged cell (poin 1),
+penanganan tanggal/sheet dinamis (poin 2), penentuan identitas item (poin 3),
+bentuk OUTPUT JSON (poin 4), dan integrasi client (poin 5). Sisanya tetap.
+
+## 1. Merged cell
+- Nilai sel yang merged **selalu dari sel kiri-atas (anchor)**. Label/keyword yang
+  jatuh di sel non-anchor di-resolve ke anchor range itu (dipakai juga untuk alamat
+  yang dilaporkan).
+- Resolusi anchor **bukan warning**: status `ok`, tidak perlu review.
+- Isu hanya bila anchor kosong/tidak valid → tetap `EMPTY_VALUE` / `TYPE_MISMATCH`.
+- `merged_range` ditulis di mode `full`, atau di mode `compact` hanya bila sel itu
+  punya isu lain. Kode `MERGED_CELL` tidak lagi dipakai engine v2 (disimpan sebagai
+  kode lama agar berkas hasil v1 tetap terbaca).
+
+## 2 & 3b. Sheet dinamis, `key`, tanggal
+- Profil memetakan field untuk **satu sheet template**, dan opsi `every_sheet: true`
+  memakai mapping yang sama untuk **semua sheet yang cocok** dengan pola `name`
+  (mis. pola `"DD"`). Tanpa `every_sheet`, satu pola = satu sheet (perilaku lama:
+  `SHEET_AMBIGUOUS` bila cocok lebih dari satu).
+- **Sheet yang tidak ada bukan error**: template yang tidak cocok sheet mana pun
+  tidak menghasilkan item, hanya dicatat `SHEET_ABSENT` (warning, satu kali per template).
+  Kode `SHEET_NOT_FOUND` tidak lagi dipakai engine v2 (disimpan seperti `MERGED_CELL`
+  agar berkas hasil v1 tetap terbaca): profil yang memetakan sheet 01-16 sementara file
+  hari itu baru berisi 01-14 tidak lagi menghasilkan baris "gagal" per sheet.
+  Isu tetap ada di `audit.issues` dan dicetak CLI; UI Langkah 3 menyaringnya dari
+  daftar catatan karena baris sheet merah di Langkah 2 sudah menandainya (keputusan user).
+- Sheet yang tidak memenuhi template mana pun dicatat diam-diam di
+  `meta.unmatched_sheets` (`{"folder", "file", "sheet", "reason"}`) tetapi tidak
+  menghasilkan isu/warning/error apa pun — sheet yang tidak terpakai biarkan saja
+  (keputusan user 2026-10-15). `SHEET_UNMATCHED` hanya untuk sheet yang sudah cocok
+  template tetapi gagal pola identitas.
+- `key` (di level profil) menentukan identitas item:
+  `{"from": "label" | "table_column" | "sheet_name" | "none", "label", "type":
+  "date" | "text", "format", "fallback", "file_pattern"}`.
+  - `label` / `table_column`: teks sel berlabel (label = judul kolom untuk mode baris).
+  - `sheet_name`: hari/bulan dari nama sheet sesuai `format` (`DD`, `D MMM`,
+    `DD-MM-YYYY`), bulan/tahun dari urutan prioritas: (1) sel berlabel di sheet,
+    (2) nama file sesuai `file_pattern`, (3) input manual per run
+    (`--month`/`--year` di CLI, `?month=&year=` di API). Dilarang menebak dari
+    `file_modified` atau tanggal hari ini.
+  - `fallback` dipakai bila sumber utama tidak terbaca (mis. `sheet_name`).
+  - `key` yang tidak terbaca: item **tetap dikeluarkan** tanpa field `key`
+    (field `key` hanya ditulis bila identitasnya ada), `status: "error"`,
+    plus isu `KEY_NOT_FOUND`. Tidak dilewati diam-diam.
+  - Tanggal dari isi sheet ≠ tanggal dari nama sheet → `DATE_CONFLICT` (error),
+    tidak memilih salah satu.
+  - Hari yang tidak ada di bulan itu (mis. "31" di bulan 30 hari) → item tanpa
+    field `key`, `status: "error"`, isu `KEY_NOT_FOUND`.
+- Tanggal ISO 8601 dipakai untuk key bertipe `date`.
+- `mode: "sheet"` (default): satu sheet = satu item. `mode: "rows"`: setiap baris
+  data = satu item; baris dikenali dari isi kolom key (label kolom tabel), bukan
+  posisi baris, sehingga berkas tanggal 1-15 dan 1-31 diproses dengan mapping yang
+  sama. Di mode `rows`, `col_keyword` wajib dan `row_keyword` tidak dipakai.
+- **Mapping massal**: `python cli.py mapping suggest --file F --sheet S` membuat
+  daftar field draf dari satu sheet contoh (label yang punya nilai di kanan/bawahnya),
+  dan `mapping export` / `mapping import` memindahkan mapping sebagai CSV
+  (atau JSON profil seperti sekarang). CSV memuat kolom sederhana
+  (`folder, sheet, output_name, row_keyword, col_keyword, direction, offset,
+  data_type, allow_empty`); pengaturan lanjutan (mode pencocokan, disambiguasi)
+  hanya lewat JSON profil.
+## 4. Skema output v2 (mode `compact` = default)
+- Berkas hasil: `output/{profil}_{YYYYMMDD_HHMMSS}.json`, isinya `{"meta", "data"}`
+  (tanpa `audit`; audit tetap tersedia di aplikasi). `data` dikelompokkan per folder
+  sumber, lalu per sheet: `{folder: {sheet: [entri, ...]}}` — berupa daftar karena
+  mode `rows` bisa menghasilkan lebih dari satu entri per sheet (keputusan user).
+- `input_root` dan path absolut tidak ditulis (tidak boleh bocor ke client).
+- `source` ditulis sekali per item. `values` hanya `key: value`; detail masalah
+  masuk `issues`. Field yang tidak ada di `issues` berarti `ok`. Status `error`
+  berarti nilainya `null` di `values` (tanpa angka tebakan).
+- Item: `{key?, status, source: {folder, file, file_modified}, sheet, values,
+  issues, content_hash}`; `key` hanya ditulis bila identitas terbaca (tanpa
+  identitas field-nya tidak muncul, bukan null); `status` item = `error` bila ada
+  nilai error atau key hilang, `warning` bila ada warning, selain itu `ok`.
+- Entri `issues`: `{status, code, at, raw?, merged_range?}` — `code` memakai kode
+  isu di dokumen ini, `at` = alamat sel, `raw` hanya bila teks tersimpan berbeda
+  dari nilai, `merged_range` hanya bila sel itu merged.
+- `content_hash`: SHA-256 dari `values` saja (JSON kanonik, kunci terurut) sehingga
+  tidak berubah karena `run_at`.
+- `meta`: `{app_version, schema_version: 2, mode, profile, run_at, summary:
+  {sheets, total_fields, ok, warning, error}, unmatched_sheets}`. `sheets` = jumlah
+  sheet yang diproses, hitungan `ok/warning/error` per **nilai** (item x field).
+- Mode `full` (flag CLI `--mode full`, parameter API `?mode=full`): tiap item
+  menambah `detail: {field: {status, value_address, row_keyword_address,
+  col_keyword_address, raw_value, type_found, merged_range, from_formula, hidden}}`.
+- JSON Schema untuk validasi client: `docs/schema/result-v2.json` (draft 2020-12),
+  berlaku untuk compact maupun full, dilayani di `GET /schema`.
+
+## 5. Integrasi (API, tanpa dependensi baru)
+`python cli.py serve --profile P [--input F] [--output O] [--host 127.0.0.1] [--port 8765]`
+menjalankan ekstraksi sekali, menyimpan berkas hasil v2, lalu melayani:
+
+- `GET /reports?from=&to=&changed_since=&hashes=` → envelope
+  `{meta, items: [...]}` (JSON minified). `from`/`to` menyaring `key` bertipe
+  tanggal (ISO, inklusif). `changed_since` menyaring berdasarkan `run_at`
+  (satu proses = satu snapshot; jalankan ulang dengan `?refresh` belum ada).
+  `hashes=a,b,c` membuang item yang `content_hash`-nya sudah dimiliki client
+  (engine tetap stateless: client yang mengirim hash-nya).
+- `GET /reports/{key}?mode=full` → `{meta, item}`.
+- `GET /schema` → JSON Schema di atas.
+- Error: JSON `{"error": "..."}` dengan status 400/404/405; tanpa stack trace.
+
+Kode isu baru (wajib ada di sini sebelum dipakai engine):
+`DATE_CONFLICT` (error), `KEY_NOT_FOUND` (error), `SHEET_ABSENT` (warning),
+`SHEET_UNMATCHED` (warning, hanya untuk sheet yang cocok template tetapi gagal
+  pola identitas; sheet yang tidak diclaim template mana pun tidak menghasilkan isu).
+Webhook push ke client **belum dibuat** (opsional di poin 5).
+UI belum punya tombol untuk `every_sheet`, mode `rows`, key, dan mapping massal
+(dipakai lewat profil JSON/CLI); itu pekerjaan lanjutan.

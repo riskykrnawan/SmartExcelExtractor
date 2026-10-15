@@ -23,6 +23,12 @@ _LOC_LABELS = {
     "sources": "Sumber",
     "folder": "Nama folder",
     "sheets": "Sheet",
+    "key": "Identitas hasil (key)",
+    "label": "Tulisan penanda identitas",
+    "format": "Pola nama sheet",
+    "file_pattern": "Pola nama file",
+    "every_sheet": "Pakai untuk semua sheet",
+    "mode": "Bentuk data",
     "fields": "Data",
     "output_name": "Nama untuk hasil ini",
     "row_keyword": "Keyword baris",
@@ -104,7 +110,7 @@ def save_profile(profile: Profile, path: Path | None = None, *, directory: Path 
     """Write `profile` to disk and return its path."""
     target = path if path is not None else profiles_dir(directory) / f"{_safe_filename(profile.name)}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(profile.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    target.write_text(profile.model_dump_json(indent=2, by_alias=True) + "\n", encoding="utf-8")
     return target
 
 
@@ -191,4 +197,6 @@ def replace_sources(profile: Profile, sources: list[SourceConfig]) -> Profile:
     Raises pydantic ValidationError with plain-Indonesian messages when the
     result would be invalid (duplicate names, empty keywords, ...).
     """
-    return Profile(name=profile.name, input_root=profile.input_root, sources=sources)
+    return Profile(
+        name=profile.name, input_root=profile.input_root, key=profile.key, sources=sources
+    )

@@ -147,6 +147,12 @@ _STRINGS: dict[str, dict[str, str]] = {
     "s2.btn_delete": {"id": "Hapus", "en": "Delete"},
     "s2.sheet_prefix": {"id": "Sheet: {name}", "en": "Sheet: {name}"},
     "s2.field_row": {"id": "{name}  -  cari baris: '{text}'", "en": "{name}  -  find row: '{text}'"},
+    "s2.sheet_missing": {
+        "id": "Sheet '{name}' belum ada di file contoh '{file}'. Baris ini ditulis merah "
+        "sebagai penanda saja - nanti kalau sheet-nya sudah ada, datanya ikut terbaca.",
+        "en": "Sheet '{name}' is not in the sample file '{file}' yet. This row is only "
+        "marked red - once the sheet exists, the data is read too.",
+    },
     "sd.title": {"id": "Tambah sheet", "en": "Add sheet"},
     "sd.label_name": {"id": "Nama sheet:", "en": "Sheet name:"},
     "sd.hint": {
@@ -194,6 +200,12 @@ _STRINGS: dict[str, dict[str, str]] = {
     "s3.col_file": {"id": "File", "en": "File"},
     "s3.col_sheet": {"id": "Sheet", "en": "Sheet"},
     "s3.col_address": {"id": "Alamat nilai", "en": "Value address"},
+    "s3.group_folder_file": {
+        "id": "📁 Folder: {folder} — File: {file}",
+        "en": "📁 Folder: {folder} — File: {file}",
+    },
+    "s3.group_folder": {"id": "📁 Folder: {folder}", "en": "📁 Folder: {folder}"},
+    "s3.group_sheet": {"id": "📄 Sheet: {sheet}", "en": "📄 Sheet: {sheet}"},
     "s3.status_ok": {"id": "Berhasil", "en": "OK"},
     "s3.status_warning": {"id": "Perlu dicek", "en": "Needs review"},
     "s3.status_error": {"id": "Gagal", "en": "Failed"},

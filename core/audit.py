@@ -28,7 +28,11 @@ class IssueCode(StrEnum):
     TYPE_MISMATCH = "TYPE_MISMATCH"
     FORMULA_NOT_CALCULATED = "FORMULA_NOT_CALCULATED"
     EXCEL_ERROR_VALUE = "EXCEL_ERROR_VALUE"
-    MERGED_CELL = "MERGED_CELL"
+    MERGED_CELL = "MERGED_CELL"  # v1 only: v2 resolves anchors without an issue
+    DATE_CONFLICT = "DATE_CONFLICT"
+    KEY_NOT_FOUND = "KEY_NOT_FOUND"
+    SHEET_ABSENT = "SHEET_ABSENT"
+    SHEET_UNMATCHED = "SHEET_UNMATCHED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -42,6 +46,8 @@ ERROR_CODES: frozenset[IssueCode] = frozenset(
         IssueCode.KEYWORD_NOT_FOUND,
         IssueCode.UNIQUE_VIOLATION,
         IssueCode.AMBIGUOUS_AFTER_DISAMBIGUATION,
+        IssueCode.DATE_CONFLICT,
+        IssueCode.KEY_NOT_FOUND,
         IssueCode.INTERNAL_ERROR,
     }
 )
@@ -154,7 +160,7 @@ class FieldResult:
 
 
 def build_summary(statuses: list[str]) -> dict[str, int]:
-    """Count field statuses into the `meta.summary` block."""
+    """Count field statuses into the `meta.summary` block (legacy v1 counts)."""
     return {
         "total_fields": len(statuses),
         "ok": statuses.count("ok"),
@@ -164,15 +170,42 @@ def build_summary(statuses: list[str]) -> dict[str, int]:
 
 
 @dataclass
+class Item:
+    """One unit of output: everything one sheet (or one table row) produced for one key.
+
+    `fields` keeps the full per-field detail (addresses, raw text, merged range) so the
+    same object serves the compact output, the full output, and the API.
+    """
+
+    key: str | None
+    status: str
+    folder: str | None
+    file: str | None
+    file_modified: str | None
+    sheet: str
+    fields: dict[str, FieldResult] = field(default_factory=dict)
+    issues: dict[str, list[Issue]] = field(default_factory=dict)
+    key_issue: Issue | None = None
+
+    def values(self) -> dict[str, Any]:
+        """Field name -> value, in field order (error fields carry `None`)."""
+        return {name: result.value for name, result in self.fields.items()}
+
+
+@dataclass
 class RunResult:
     """The complete output of one extraction run."""
 
     meta: dict[str, Any]
     data: dict[str, dict[str, Any]]
     audit: dict[str, Any]
+    items: list[Item] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON form: {"meta", "data", "audit"} with stable key order."""
+        """In-process view (UI/audit): {"meta", "data", "audit"} with stable key order.
+
+        The file written for the client uses `core.output.build_document` instead.
+        """
         return {"meta": self.meta, "data": self.data, "audit": self.audit}
 
     @property
